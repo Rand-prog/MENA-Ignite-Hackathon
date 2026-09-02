@@ -1,0 +1,38 @@
+# secrets — never committed
+.env
+backend/.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# db
+backend/signalguard.db
+backend/*.db-journal
+
+# flutter
+app/build/
+app/.dart_tool/
+app/.flutter-plugin-dependencies
+app/android/.gradle/
+app/android/.kotlin/
+
+# node (dashboard)
+dashboard/node_modules/
+dashboard/dist/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# reference docs — not published to this repo
+docs/
+
+# stale duplicate of scripts/run_demo.py, kept locally only
+demo script/
