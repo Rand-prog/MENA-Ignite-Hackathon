@@ -1,0 +1,533 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0f0e;
+  --surface: #141b19;
+  --surface-raised: #1c2624;
+  --border: #283330;
+  --text: #eaf2ef;
+  --text-secondary: #9db0ab;
+  --text-muted: #64756f;
+  --accent: #2fd98a;
+  --accent-dim: #1b7a50;
+  --amber: #e6b94d;
+  --danger: #e0654f;
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; }
+
+button, a, .trip-marker {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: 12px; top: 12px;
+  background: var(--accent);
+  color: #04150e;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  z-index: 100;
+  transform: translateY(-120%);
+  transition: transform 150ms ease;
+}
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  /* No overflow:hidden here — on a narrow viewport .layout stacks into
+     one column and needs the page to scroll normally. The wide-viewport
+     two-column layout gets its own contained scrolling instead (see
+     .trip-list below), which is where "app-like, not a webpage" belongs. */
+  min-height: 100vh;
+}
+
+/* ---------- topbar ---------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.brand { display: flex; align-items: center; gap: 10px; }
+
+.brand-mark {
+  width: 20px; height: 20px;
+  border-radius: 6px;
+  background: radial-gradient(circle at 30% 30%, var(--accent), var(--accent-dim));
+}
+
+.brand-name { font-weight: 700; font-size: 16px; letter-spacing: -0.2px; }
+
+.brand-sub {
+  color: var(--text-secondary);
+  font-size: 13px;
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+  margin-left: 2px;
+}
+
+.topbar-right { display: flex; align-items: center; gap: 18px; }
+
+.backend-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.backend-field input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  width: 200px;
+  font-family: ui-monospace, monospace;
+}
+
+.backend-field input:focus {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.backend-field input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(47, 217, 138, 0.35);
+}
+
+.live-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.live-indicator .dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.live-indicator.stale .dot {
+  background: var(--danger);
+  box-shadow: 0 0 8px var(--danger);
+  animation: none;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ---------- layout ---------- */
+
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(360px, 1.1fr) minmax(340px, 0.9fr);
+  gap: 1px;
+  background: var(--border);
+  min-height: 0;
+}
+
+.map-panel, .list-panel {
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 20px 24px;
+}
+
+/* App-like fixed-viewport shell with internally-scrolling panels — only
+   once there's room for the two-column grid it's designed for. Below
+   that, .layout stacks (see the bottom media query) and the whole page
+   scrolls normally instead; forcing overflow:hidden there would trap
+   content no viewport had room to show. */
+@media (min-width: 861px) {
+  body { height: 100vh; overflow: hidden; }
+  .layout { overflow: hidden; }
+  .map-panel, .list-panel { overflow: hidden; }
+}
+
+.panel-head { flex: none; margin-bottom: 14px; }
+.panel-head h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600; text-wrap: balance; }
+.panel-hint { color: var(--text-secondary); font-size: 13px; }
+
+/* ---------- map ---------- */
+
+.map-frame {
+  position: relative;
+  flex: 1;
+  min-height: 220px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.map-frame img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill; /* container's aspect-ratio is set in JS to match the
+                        image exactly, so this never distorts or crops —
+                        cropping would break the lat/lon-to-% projection
+                        markers rely on. */
+  filter: saturate(0.85);
+}
+
+.map-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(11,15,14,.35), rgba(11,15,14,0) 30%, rgba(11,15,14,.4));
+  pointer-events: none;
+}
+
+.map-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+.map-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+}
+
+.gate-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+.gate-marker .dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  border: 2px solid rgba(0,0,0,.4);
+}
+.gate-marker .label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--text-secondary);
+  background: rgba(11,15,14,.75);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.trip-marker {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+}
+.trip-marker:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+.trip-marker::after {
+  content: "";
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #fff;
+}
+.trip-marker.state-green { background: var(--accent); box-shadow: 0 0 0 6px rgba(47,217,138,.18); }
+.trip-marker.state-amber { background: var(--amber); box-shadow: 0 0 0 6px rgba(230,185,77,.18); }
+.trip-marker.state-red { background: var(--danger); box-shadow: 0 0 0 6px rgba(224,101,79,.22); }
+.trip-marker.selected { outline: 2px solid #fff; outline-offset: 2px; }
+
+.map-attribution {
+  position: absolute;
+  right: 8px; bottom: 6px;
+  font-size: 10px;
+  color: rgba(255,255,255,.7);
+  text-shadow: 0 1px 2px rgba(0,0,0,.8);
+  z-index: 2;
+}
+
+.legend {
+  flex: none;
+  display: flex;
+  gap: 18px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.legend span { display: flex; align-items: center; gap: 6px; }
+
+.map-note {
+  flex: none;
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  max-width: 52ch;
+}
+
+.swatch {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.swatch.green { background: var(--accent); }
+.swatch.amber { background: var(--amber); }
+.swatch.red { background: var(--danger); }
+
+/* ---------- trip list ---------- */
+
+.list-panel { border-left: 0; }
+
+#trip-count,
+.trip-row .trip-meta,
+.detail-grid dd {
+  font-variant-numeric: tabular-nums;
+}
+
+.trip-list {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.trip-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+  text-align: left;
+  width: 100%;
+}
+
+.trip-row:hover { background: var(--surface-raised); }
+.trip-row.selected { border-color: var(--accent); background: var(--surface-raised); }
+
+.trip-row .status-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.trip-row.state-green .status-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.trip-row.state-amber .status-dot { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+.trip-row.state-red .status-dot { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+
+.trip-row .trip-main { flex: 1; min-width: 0; }
+
+.trip-row .trip-name {
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trip-row .trip-meta {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.trip-row .trip-state-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  flex: none;
+}
+.trip-row.state-green .trip-state-label { color: var(--accent); background: rgba(47,217,138,.12); }
+.trip-row.state-amber .trip-state-label { color: var(--amber); background: rgba(230,185,77,.12); }
+.trip-row.state-red .trip-state-label { color: var(--danger); background: rgba(224,101,79,.14); }
+
+.empty-state {
+  display: none;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  text-align: center;
+  color: var(--text-secondary);
+  gap: 6px;
+  padding: 30px;
+}
+.empty-state.visible { display: flex; }
+.empty-state .muted { color: var(--text-muted); font-size: 13px; max-width: 320px; }
+
+/* ---------- detail panel ---------- */
+
+.detail-panel {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: min(420px, 100vw);
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  padding: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 20;
+  transform: translateX(0);
+  box-shadow: -20px 0 40px rgba(0,0,0,.4);
+}
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+}
+.close-btn:hover { color: var(--text); }
+
+.status-pill {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.status-pill.state-green { color: var(--accent); border-color: rgba(47,217,138,.4); }
+.status-pill.state-amber { color: var(--amber); border-color: rgba(230,185,77,.4); }
+.status-pill.state-red { color: var(--danger); border-color: rgba(224,101,79,.5); }
+
+.detail-panel h3 { margin: 0 0 2px; font-size: 20px; }
+.detail-sub { margin: 0 0 20px; color: var(--text-secondary); font-size: 13px; font-family: ui-monospace, monospace; }
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin: 0 0 22px;
+}
+.detail-grid dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+.detail-grid dd {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.decision-record { margin-bottom: 22px; }
+.decision-record h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+.decision-record pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.resolve-btn {
+  width: 100%;
+  padding: 13px;
+  border-radius: 12px;
+  border: none;
+  background: var(--accent);
+  color: #04150e;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+}
+.resolve-btn:hover { filter: brightness(1.06); }
+.resolve-btn:disabled { opacity: 0.45; cursor: default; }
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.35);
+  z-index: 10;
+}
+
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; grid-auto-rows: minmax(240px, auto) 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-indicator .dot { animation: none; }
+  .skip-link, .trip-row, .resolve-btn { transition: none; }
+}

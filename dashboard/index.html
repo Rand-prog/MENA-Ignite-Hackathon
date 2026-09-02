@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#0b0f0e" />
+<title>SignalGuard — Emergency Centre</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<a class="skip-link" href="#trip-list">Skip to active trips</a>
+
+<h1 class="visually-hidden">SignalGuard Emergency Centre</h1>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">SignalGuard</span>
+    <span class="brand-sub">Emergency Centre</span>
+  </div>
+  <div class="topbar-right">
+    <label class="backend-field">
+      <span>Backend</span>
+      <input
+        id="backend-url"
+        type="url"
+        name="backend-url"
+        autocomplete="off"
+        spellcheck="false"
+        inputmode="url"
+      />
+    </label>
+    <div class="live-indicator" id="live-indicator" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span> live
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="map-panel" aria-label="Corridor map">
+    <div class="panel-head">
+      <h2 id="zone-label">Loading zone…</h2>
+      <span class="panel-hint">Highway 15 corridor · live trip positions</span>
+    </div>
+    <div class="map-frame" id="map-frame">
+      <img id="map-image" alt="" />
+      <div id="map-overlay" class="map-overlay"></div>
+      <div class="map-attribution" id="map-attribution"></div>
+    </div>
+    <div class="legend">
+      <span><i class="swatch green" aria-hidden="true"></i> in transit</span>
+      <span><i class="swatch amber" aria-hidden="true"></i> approaching exit</span>
+      <span><i class="swatch red" aria-hidden="true"></i> overdue</span>
+    </div>
+    <p class="map-note">Position estimated from elapsed time along the corridor — the network gives one location snapshot at entry, not a live feed while a trip is dark.</p>
+  </section>
+
+  <section class="list-panel" aria-label="Active trips">
+    <div class="panel-head">
+      <h2>Active Trips</h2>
+      <span class="panel-hint" id="trip-count">0 monitored</span>
+    </div>
+    <div id="trip-list" class="trip-list" aria-live="polite"></div>
+    <div id="empty-state" class="empty-state">
+      <p>No trips in the corridor right now.</p>
+      <p class="muted">The queue fills automatically when a traveller crosses a gate — nothing to configure here.</p>
+    </div>
+  </section>
+</main>
+
+<aside class="detail-panel" id="detail-panel" hidden>
+  <div class="detail-head">
+    <button class="close-btn" id="detail-close" aria-label="Close">✕</button>
+    <span class="status-pill" id="detail-status">ACTIVE</span>
+  </div>
+  <h3 id="detail-name">—</h3>
+  <p class="detail-sub" id="detail-msisdn">—</p>
+
+  <dl class="detail-grid">
+    <div><dt>Entry point</dt><dd id="detail-entry">—</dd></div>
+    <div><dt>Last known location</dt><dd id="detail-lastknown">—</dd></div>
+    <div><dt>Predicted vs elapsed</dt><dd id="detail-predicted">—</dd></div>
+    <div><dt>Battery at entry</dt><dd id="detail-battery">—</dd></div>
+    <div><dt>Congestion at entry</dt><dd id="detail-congestion">—</dd></div>
+    <div><dt>Risk score</dt><dd id="detail-risk">—</dd></div>
+    <div><dt>Contact-alert status</dt><dd id="detail-alert">—</dd></div>
+  </dl>
+
+  <div class="decision-record">
+    <h4>Agent Decision Record</h4>
+    <pre id="detail-record">—</pre>
+  </div>
+
+  <button class="resolve-btn" id="detail-resolve">Mark Resolved</button>
+</aside>
+
+<div class="scrim" id="scrim" hidden></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
