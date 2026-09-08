@@ -56,13 +56,34 @@ def model_weighted_window(
 
 def deterministic_fallback(
     *, nominal_crossing_min: int, congestion_tier: str, battery_pct: int,
+    observed_p50_min: int | None = None, observed_p90_min: int | None = None,
 ) -> RiskDecision:
     """No LLM involved at all. Wider than the model's typical window by
-    construction (1.4x nominal) — a conservative floor a human can trust
-    when the reasoning layer is dark. No reasoning text: the whole point is
-    that none was produced."""
-    predicted = nominal_crossing_min
-    window = clamp_window(round(nominal_crossing_min * 1.4))
+    construction — a conservative floor a human can trust when the
+    reasoning layer is dark. No reasoning text: the whole point is that
+    none was produced.
+
+    When corridor_stats has enough clean history for this hour, that
+    history replaces the registry's hand-set nominal on BOTH sides of the
+    calculation: plan against the observed p50, and size the buffer with
+    the observed p90 rather than a flat 1.4x multiplier. This is the path
+    that runs when Gemini is unavailable, which is precisely when the
+    window most needs to rest on something measured rather than on a
+    constant somebody typed once — a 1.4x on a wrong nominal is wrong by
+    1.4x too.
+
+    The p90 is a floor on the buffer, never a ceiling: whichever of
+    (observed p90) and (1.4x planned) is wider wins, so learning about a
+    fast corridor can tighten the plan but can never narrow the safety
+    margin below what the un-learned model would have given.
+    """
+    if observed_p50_min:
+        predicted = observed_p50_min
+        flat = round(predicted * 1.4)
+        window = clamp_window(max(flat, observed_p90_min or 0))
+    else:
+        predicted = nominal_crossing_min
+        window = clamp_window(round(nominal_crossing_min * 1.4))
     risk = "ELEVATED" if battery_pct < 25 else "LOW"
     # QoD trigger: low battery — the boost matters more when there's less
     # time left in which a handset can be found.
@@ -73,5 +94,9 @@ def deterministic_fallback(
         risk=risk,
         qod_warranted=qod_warranted,
         reasoning="",
-        model_used="UNAVAILABLE -> deterministic risk model",
+        model_used=(
+            "UNAVAILABLE -> deterministic risk model (observed history)"
+            if observed_p50_min
+            else "UNAVAILABLE -> deterministic risk model"
+        ),
     )

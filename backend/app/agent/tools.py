@@ -96,12 +96,25 @@ async def get_location(ctx: AgentContext, trip_id: str) -> dict:
 
 async def check_device_reachability(ctx: AgentContext, trip_id: str) -> dict:
     """CAMARA Device Reachability Status — one-shot check. Ongoing
-    verification during the crossing uses the subscription form instead."""
+    verification during the crossing uses the subscription form instead.
+
+    The real sandbox response doesn't match docs/nokia-api-catalog.md's
+    documented shape (confirmed live 2026-09-04): there is no
+    connectivityStatus enum field. Instead it returns
+    {"reachable": bool, "connectivity": ["SMS"|"DATA", ...]}. Translated
+    here to the CONNECTED_DATA/CONNECTED_SMS/NOT_CONNECTED vocabulary the
+    rest of the agent (escalation_graph.py's routing) speaks, rather than
+    teaching that vocabulary the sandbox's actual shape."""
     try:
         result = await ctx.nac.retrieve_reachability(device_phone=ctx.nac_device)
     except NokiaCallError:
         return {"status": "unknown", "error": True}
-    return {"status": result.get("connectivityStatus", "unknown"), "raw": result}
+    if not result.get("reachable"):
+        return {"status": "NOT_CONNECTED", "raw": result}
+    connectivity = result.get("connectivity") or []
+    status = "CONNECTED_DATA" if "DATA" in connectivity else \
+        "CONNECTED_SMS" if "SMS" in connectivity else "CONNECTED_DATA"
+    return {"status": status, "raw": result}
 
 
 async def request_qod_session(ctx: AgentContext, trip_id: str) -> dict:
@@ -118,9 +131,14 @@ async def notify_contact(ctx: AgentContext, trip_id: str, tier: str) -> dict:
     """Internal action — Tier 1/2 notification. No SMS gateway is wired up
     for the prototype; the message is composed and recorded on the trip so
     the demo's second-handset step and the dashboard both have something
-    real to show. Wiring an actual SMS provider is out of scope here."""
+    real to show. Wiring an actual SMS provider is out of scope here.
+
+    Idempotent like escalate_to_dashboard below — safe to call more than
+    once for the same tier (the escalation agent and the state machine's
+    own guaranteed fallback can both reach this in the same transition)."""
     notes = list(ctx.trip.notifications or [])
-    notes.append(tier)
+    if tier not in notes:
+        notes.append(tier)
     ctx.trip.notifications = notes
     return {"tier": tier, "recorded": True}
 
