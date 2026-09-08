@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#0b0f0e" />
+<title>SignalGuard — Demo Controls</title>
+<link rel="stylesheet" href="css/style.css?v=4" />
+<link rel="stylesheet" href="css/demo.css?v=1" />
+</head>
+<body class="demo-body">
+
+<!-- Deliberately a separate page from index.html, not a panel on it.
+     index.html is the emergency-centre console: the one screen whose whole
+     job is to be believed. A "simulate a gate crossing" button sitting next
+     to a live trip queue tells a viewer the queue might be synthetic too.
+     These controls drive the same backend from their own address, and the
+     operator console keeps zero knowledge that they exist. -->
+
+<h1 class="visually-hidden">SignalGuard demo controls</h1>
+
+<div id="announcer" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">SignalGuard</span>
+    <span class="brand-sub">Demo Controls</span>
+  </div>
+  <div class="topbar-right">
+    <label class="backend-field">
+      <span>Backend</span>
+      <input id="backend-url" type="url" name="backend-url" autocomplete="off" spellcheck="false" inputmode="url" />
+    </label>
+    <a class="mute-toggle" href="index.html">← Emergency Centre</a>
+    <div class="live-indicator" id="live-indicator">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="last-updated" class="last-updated">—</span>
+    </div>
+  </div>
+</header>
+
+<!-- The caption run_demo.py's docstring tells you to say on camera, made
+     permanent so it is on screen whenever these buttons are. -->
+<p class="demo-band" id="demo-band">
+  <strong>DEMO CONTROLS</strong>
+  <span>Gate crossings and reachability changes are <em>synthetic</em> — Nokia's
+  sandbox cannot move a device. Everything downstream of the trigger is real:
+  Location Retrieval, Congestion Insights, QoD and Device Reachability run
+  against the live sandbox, with the latencies shown below.</span>
+</p>
+
+<p class="demo-unavailable" id="demo-unavailable" hidden></p>
+
+<main class="demo-layout" id="demo-main">
+
+  <section class="demo-panel" aria-labelledby="h-setup">
+    <h2 id="h-setup">1 · Set up a crossing</h2>
+    <p class="demo-note">Clears the database, enrols the demo traveller, and
+      arms both geofences on the network for real.</p>
+    <div class="demo-fields">
+      <label>Zone
+        <select id="f-zone"></select>
+      </label>
+      <label>Battery at entry
+        <input id="f-battery" type="number" min="1" max="100" value="82" />
+      </label>
+      <label class="demo-check">
+        <input id="f-model" type="checkbox" checked />
+        <span>Gemini enabled</span>
+      </label>
+    </div>
+    <div class="demo-actions">
+      <button class="demo-btn primary" id="b-arm" type="button">Reset &amp; arm</button>
+      <button class="demo-btn" id="b-battery" type="button">Apply battery</button>
+      <button class="demo-btn" id="b-model" type="button">Apply model switch</button>
+    </div>
+  </section>
+
+  <section class="demo-panel" aria-labelledby="h-cross">
+    <h2 id="h-cross">2 · Drive the crossing</h2>
+    <p class="demo-note">Each button is one synthetic network event. Nothing
+      here decides what happens next — the state machine and the agent do.</p>
+    <div class="demo-actions">
+      <button class="demo-btn" id="b-enter" type="button">Enter gate</button>
+      <button class="demo-btn" id="b-dark" type="button">Go dark</button>
+      <button class="demo-btn" id="b-reconnect" type="button">Reconnect</button>
+      <button class="demo-btn" id="b-exit" type="button">Exit gate</button>
+    </div>
+  </section>
+
+  <section class="demo-panel" aria-labelledby="h-time">
+    <h2 id="h-time">3 · Move the clock</h2>
+    <p class="demo-note">Virtual clock — the same one <code>run_demo.py</code>
+      advances. A crossing takes over an hour in real time.</p>
+    <div class="demo-actions">
+      <button class="demo-btn" data-advance="5" type="button">+5 min</button>
+      <button class="demo-btn" data-advance="15" type="button">+15 min</button>
+      <button class="demo-btn" data-advance="60" type="button">+60 min</button>
+      <label class="demo-inline-field">
+        <input id="f-minutes" type="number" min="1" max="600" value="30" />
+        <button class="demo-btn" id="b-advance-custom" type="button">Advance</button>
+      </label>
+    </div>
+    <div class="demo-actions">
+      <button class="demo-btn" id="b-past-window" type="button">
+        Past the monitoring window
+      </button>
+      <button class="demo-btn" id="b-past-grace" type="button">
+        Past the Tier 1 grace period
+      </button>
+    </div>
+    <p class="demo-note" id="advance-hint">—</p>
+  </section>
+
+  <section class="demo-panel" aria-labelledby="h-human">
+    <h2 id="h-human">4 · Humans answer</h2>
+    <p class="demo-note">The two replies that stop an escalation: the
+      traveller answering the Tier 0 ping, and the contact standing the
+      alarm down after Tier 1.</p>
+    <div class="demo-actions">
+      <button class="demo-btn" id="b-tier0-safe" type="button">Traveller: “I'm fine”</button>
+      <button class="demo-btn" id="b-contact-safe" type="button">Contact: “he's safe”</button>
+    </div>
+  </section>
+
+  <section class="demo-panel demo-status" aria-labelledby="h-status">
+    <h2 id="h-status">Current trip</h2>
+    <dl class="demo-dl">
+      <div><dt>Traveller</dt><dd id="s-traveller">—</dd></div>
+      <div><dt>Trip</dt><dd id="s-trip">—</dd></div>
+      <div><dt>State</dt><dd id="s-state">—</dd></div>
+      <div><dt>Risk</dt><dd id="s-risk">—</dd></div>
+      <div><dt>Predicted crossing</dt><dd id="s-predicted">—</dd></div>
+      <div><dt>Monitoring window</dt><dd id="s-window">—</dd></div>
+      <div><dt>Window deadline</dt><dd id="s-deadline">—</dd></div>
+      <div><dt>Server clock</dt><dd id="s-now">—</dd></div>
+      <div class="span-2"><dt>Notifications</dt><dd id="s-notifications">none</dd></div>
+    </dl>
+  </section>
+
+  <section class="demo-panel" aria-labelledby="h-api">
+    <h2 id="h-api">Live CAMARA calls</h2>
+    <p class="demo-note">Real requests against Nokia's sandbox, newest last.</p>
+    <div class="demo-api-log" id="api-log"></div>
+  </section>
+
+  <section class="demo-panel demo-wide" aria-labelledby="h-log">
+    <h2 id="h-log">Control log</h2>
+    <div class="demo-log" id="demo-log" role="log" aria-label="Demo control log"></div>
+  </section>
+
+</main>
+
+<script src="js/demo.js?v=1"></script>
+</body>
+</html>

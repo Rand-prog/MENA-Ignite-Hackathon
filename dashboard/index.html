@@ -5,13 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="theme-color" content="#0b0f0e" />
 <title>SignalGuard — Emergency Centre</title>
-<link rel="stylesheet" href="css/style.css" />
+<link rel="stylesheet" href="css/style.css?v=4" />
 </head>
 <body>
 
 <a class="skip-link" href="#trip-list">Skip to active trips</a>
 
 <h1 class="visually-hidden">SignalGuard Emergency Centre</h1>
+
+<!-- Announcements only, never a wrapper around the list. A live region
+     around a list that repaints every 3 seconds makes a screen reader
+     re-read the whole queue on every poll, which is worse than having no
+     live region at all. This node is written to only on transitions. -->
+<div id="announcer" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <header class="topbar">
   <div class="brand">
@@ -31,45 +37,97 @@
         inputmode="url"
       />
     </label>
-    <div class="live-indicator" id="live-indicator" aria-live="polite">
-      <span class="dot" aria-hidden="true"></span> live
+    <button id="mute-toggle" class="mute-toggle" type="button" aria-pressed="false">🔔 Alerts on</button>
+    <button id="shortcut-toggle" class="mute-toggle" type="button" aria-controls="shortcut-hint">⌨ Keys</button>
+    <div class="live-indicator" id="live-indicator">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="last-updated" class="last-updated">—</span>
     </div>
   </div>
 </header>
+
+<!-- Keyboard reference. Hidden by default and toggled with "?" — a
+     dispatcher console should be operable without a mouse, but the list of
+     how is not something to occupy the screen permanently. -->
+<div class="shortcut-hint" id="shortcut-hint" hidden role="dialog" aria-label="Keyboard shortcuts">
+  <h2>Keyboard</h2>
+  <dl></dl>
+</div>
 
 <main class="layout">
   <section class="map-panel" aria-label="Corridor map">
     <div class="panel-head">
       <h2 id="zone-label">Loading zone…</h2>
-      <span class="panel-hint">Highway 15 corridor · live trip positions</span>
+      <span class="panel-hint">Estimated positions · not a live feed</span>
+      <!-- Only rendered when more than one zone exists; a dropdown with a
+           single option is furniture, not a control. -->
+      <label class="zone-picker" hidden>
+        <span class="visually-hidden">Corridor</span>
+        <select id="zone-select" hidden></select>
+      </label>
     </div>
     <div class="map-frame" id="map-frame">
       <img id="map-image" alt="" />
+      <!-- Uncertainty arcs sit under the markers so a marker is always
+           clickable where the two overlap. -->
+      <svg id="cone-layer" class="cone-layer" aria-hidden="true"></svg>
       <div id="map-overlay" class="map-overlay"></div>
       <div class="map-attribution" id="map-attribution"></div>
     </div>
+    <!-- A zone promoted from a coverage candidate has real gates and real
+         trips but no bundled tiles. Drawing its trips over Highway 15's
+         terrain would put a traveller on a map somewhere they have never
+         been, so the frame is hidden and says why. -->
+    <p class="zone-map-note" id="zone-map-note" hidden>
+      No map pack bundled for this corridor yet — it was discovered from
+      coverage data rather than surveyed. The trip list is still live;
+      only the map is unavailable.
+    </p>
     <div class="legend">
       <span><i class="swatch green" aria-hidden="true"></i> in transit</span>
-      <span><i class="swatch amber" aria-hidden="true"></i> approaching exit</span>
+      <span><i class="swatch amber" aria-hidden="true"></i> window expiring</span>
       <span><i class="swatch red" aria-hidden="true"></i> overdue</span>
+      <span><i class="swatch cone" aria-hidden="true"></i> possible positions</span>
     </div>
-    <p class="map-note">Position estimated from elapsed time along the corridor — the network gives one location snapshot at entry, not a live feed while a trip is dark.</p>
+    <p class="map-note">The bar is where a traveller could be, not where they are. The network gives one location fix — at the entry gate — and cannot see inside the dead zone, so the range is derived from elapsed time and widens as the crossing runs on.</p>
+
+    <div class="stats-panel" id="stats-panel">
+      <h3>How long this corridor actually takes</h3>
+      <div id="stats-body"></div>
+    </div>
   </section>
 
-  <section class="list-panel" aria-label="Active trips">
+  <section class="list-panel" aria-label="Trips">
     <div class="panel-head">
-      <h2>Active Trips</h2>
+      <div class="tabs" role="tablist" aria-label="Trip view">
+        <button id="tab-live" class="tab" role="tab" type="button" aria-selected="true">Active Trips</button>
+        <button id="tab-history" class="tab" role="tab" type="button" aria-selected="false">History</button>
+      </div>
       <span class="panel-hint" id="trip-count">0 monitored</span>
     </div>
-    <div id="trip-list" class="trip-list" aria-live="polite"></div>
+    <!-- What moved while the dispatcher was looking elsewhere. -->
+    <aside class="change-banner" id="change-banner" hidden>
+      <div class="change-banner-head">
+        <strong>While you were away</strong>
+        <button type="button" id="change-banner-dismiss" class="mute-toggle">Dismiss</button>
+      </div>
+      <ul id="change-banner-body"></ul>
+    </aside>
+    <div id="trip-list" class="trip-list"></div>
     <div id="empty-state" class="empty-state">
-      <p>No trips in the corridor right now.</p>
-      <p class="muted">The queue fills automatically when a traveller crosses a gate — nothing to configure here.</p>
+      <div data-empty-live>
+        <p>No trips in the corridor right now.</p>
+        <p class="muted">The queue fills automatically when a traveller crosses a gate — nothing to configure here.</p>
+      </div>
+      <div data-empty-history hidden>
+        <p>No completed crossings yet.</p>
+        <p class="muted">Trips move here once they close, so the queue above only ever shows what still needs watching.</p>
+      </div>
     </div>
   </section>
 </main>
 
-<aside class="detail-panel" id="detail-panel" hidden>
+<aside class="detail-panel" id="detail-panel" hidden aria-label="Trip detail">
   <div class="detail-head">
     <button class="close-btn" id="detail-close" aria-label="Close">✕</button>
     <span class="status-pill" id="detail-status">ACTIVE</span>
@@ -81,22 +139,46 @@
     <div><dt>Entry point</dt><dd id="detail-entry">—</dd></div>
     <div><dt>Last known location</dt><dd id="detail-lastknown">—</dd></div>
     <div><dt>Predicted vs elapsed</dt><dd id="detail-predicted">—</dd></div>
+    <div class="span-2"><dt>Where they could be</dt><dd id="detail-position">—</dd></div>
     <div><dt>Battery at entry</dt><dd id="detail-battery">—</dd></div>
     <div><dt>Congestion at entry</dt><dd id="detail-congestion">—</dd></div>
     <div><dt>Risk score</dt><dd id="detail-risk">—</dd></div>
     <div><dt>Contact-alert status</dt><dd id="detail-alert">—</dd></div>
+    <div class="span-2"><dt>Convoy</dt><dd id="detail-convoy">—</dd></div>
   </dl>
 
   <div class="decision-record">
     <h4>Agent Decision Record</h4>
-    <pre id="detail-record">—</pre>
+    <div id="detail-record" class="record-card"></div>
   </div>
 
+  <div class="decision-record" id="detail-escalation-block" hidden>
+    <h4>Escalation Agent Record</h4>
+    <div id="detail-escalation"></div>
+  </div>
+
+  <button class="resolve-btn ghost" id="detail-handoff" type="button">Copy handoff brief</button>
   <button class="resolve-btn" id="detail-resolve">Mark Resolved</button>
+
+  <!-- Resolving clears a live escalation and there is no undo. One stray
+       click on a 40px button should not be able to do that. -->
+  <div class="resolve-confirm" id="detail-resolve-confirm" hidden>
+    <p data-confirm-text></p>
+    <div class="resolve-confirm-actions">
+      <button class="resolve-btn danger" type="button" data-confirm-yes>Yes, resolve</button>
+      <button class="resolve-btn ghost" type="button" data-confirm-no>Cancel</button>
+    </div>
+  </div>
 </aside>
 
 <div class="scrim" id="scrim" hidden></div>
 
-<script src="js/app.js"></script>
+<!-- Version query: this dashboard has no build step, and python -m
+     http.server serves js/app.js with a revalidating Last-Modified
+     that Chrome will happily satisfy from cache across a restart.
+     During the hackathon that meant a browser silently running a
+     previous build of this file while the disk had the current one.
+     Bump on every change. -->
+<script src="js/app.js?v=4"></script>
 </body>
 </html>

@@ -278,10 +278,15 @@ body {
   border-radius: 50%;
   background: #fff;
 }
-.trip-marker.state-green { background: var(--accent); box-shadow: 0 0 0 6px rgba(47,217,138,.18); }
-.trip-marker.state-amber { background: var(--amber); box-shadow: 0 0 0 6px rgba(230,185,77,.18); }
-.trip-marker.state-red { background: var(--danger); box-shadow: 0 0 0 6px rgba(224,101,79,.22); }
+.trip-marker.state-green { background: var(--accent); box-shadow: 0 0 0 6px rgba(47,217,138,.18); animation: marker-pulse 2.6s ease-in-out infinite; }
+.trip-marker.state-amber { background: var(--amber); box-shadow: 0 0 0 6px rgba(230,185,77,.18); animation: marker-pulse 2s ease-in-out infinite; }
+.trip-marker.state-red { background: var(--danger); box-shadow: 0 0 0 6px rgba(224,101,79,.22); animation: marker-pulse 1.3s ease-in-out infinite; }
 .trip-marker.selected { outline: 2px solid #fff; outline-offset: 2px; }
+
+@keyframes marker-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
 
 .map-attribution {
   position: absolute;
@@ -362,10 +367,19 @@ body {
   width: 10px; height: 10px;
   border-radius: 50%;
   flex: none;
+  animation: dot-pulse 2.6s ease-in-out infinite;
 }
-.trip-row.state-green .status-dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
-.trip-row.state-amber .status-dot { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
-.trip-row.state-red .status-dot { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+/* Pulse speed scales with urgency — green breathes slowly ("all fine, no
+   need to look"), red pulses fastest (draws the eye without a popup or
+   sound, which the dashboard deliberately has neither of). */
+.trip-row.state-green .status-dot { background: var(--accent); --pulse-color: 47,217,138; }
+.trip-row.state-amber .status-dot { background: var(--amber); --pulse-color: 230,185,77; animation-duration: 2s; }
+.trip-row.state-red .status-dot { background: var(--danger); --pulse-color: 224,101,79; animation-duration: 1.3s; }
+
+@keyframes dot-pulse {
+  0%, 100% { box-shadow: 0 0 6px 0 rgba(var(--pulse-color), 0.9); transform: scale(1); }
+  50% { box-shadow: 0 0 13px 3px rgba(var(--pulse-color), 0.55); transform: scale(1.18); }
+}
 
 .trip-row .trip-main { flex: 1; min-width: 0; }
 
@@ -487,19 +501,124 @@ body {
   color: var(--text-muted);
   margin: 0 0 8px;
 }
-.decision-record pre {
+
+/* ---------- structured agent record ---------- */
+/* Renders the backend's "key   value" plain-text record (see
+   backend/app/agent/decision_record.py) as scannable rows instead of a raw
+   <pre> dump — same data, parsed client-side by parseAgentRecord() in
+   app.js. A record can carry more than one block (an escalation record
+   accumulates a tier1 block, later a tier2 block) — each gets its own
+   .record-card so a dispatcher can tell them apart at a glance. */
+
+.record-card {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 12px 14px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: ui-monospace, "SF Mono", Consolas, monospace;
-  max-height: 220px;
+  padding: 14px 16px;
+  max-height: 260px;
   overflow-y: auto;
+}
+.record-card + .record-card { margin-top: 10px; }
+
+.record-empty {
+  margin: 0;
+  padding: 12px 14px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.record-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.record-card-title .status-pill { padding: 2px 8px; font-size: 10px; }
+
+.record-row {
+  display: grid;
+  grid-template-columns: 78px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+  font-size: 12.5px;
+}
+.record-row + .record-row { border-top: 1px dashed var(--border); }
+
+.record-key {
+  color: var(--text-muted);
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.record-value {
+  color: var(--text-secondary);
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.record-row.is-reasoning .record-value,
+.record-row.is-note .record-value {
+  color: var(--text);
+  font-style: italic;
+}
+
+.record-row.is-model .record-value {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  color: var(--accent);
+}
+
+.record-row.is-window .record-value { color: var(--text); font-weight: 600; }
+.record-row.is-window .record-sub { color: var(--text-muted); font-weight: 400; margin-left: 4px; }
+
+.record-row.is-action .record-value {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.record-signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.signal-chip {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+.signal-chip.is-reachable { color: var(--amber); border-color: rgba(230,185,77,.4); }
+.signal-chip.is-dark { color: var(--text-secondary); }
+
+.record-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tool-chip {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--accent);
+  background: rgba(47,217,138,.1);
+  border: 1px solid rgba(47,217,138,.25);
+  border-radius: 6px;
+  padding: 2px 7px;
+  white-space: nowrap;
 }
 
 .resolve-btn {
@@ -528,6 +647,261 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-indicator .dot { animation: none; }
+  .live-indicator .dot,
+  .trip-row .status-dot,
+  .trip-marker { animation: none; }
   .skip-link, .trip-row, .resolve-btn { transition: none; }
 }
+
+/* ==========================================================================
+   Additions: uncertainty cones, view tabs, corridor stats, resolve
+   confirmation, freshness readout, alert toggle.
+   ========================================================================== */
+
+/* -- top bar ------------------------------------------------------------- */
+
+.mute-toggle {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mute-toggle:hover { color: var(--text); border-color: var(--text-muted); }
+.mute-toggle[aria-pressed="true"] { opacity: 0.65; }
+
+.last-updated { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.last-updated.is-stale { color: var(--danger); }
+
+/* -- uncertainty cone ----------------------------------------------------- */
+
+.cone-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+.cone {
+  stroke-width: 9;
+  stroke-linecap: round;
+  opacity: 0.34;
+}
+.cone-green { stroke: var(--accent); }
+.cone-amber { stroke: var(--amber); }
+.cone-red   { stroke: var(--danger); opacity: 0.45; }
+
+.map-overlay { z-index: 2; }
+
+/* A best guess that has outlived its own prediction stops being drawn as a
+   position: hollow, so the arc is what the eye reads. */
+.trip-marker.is-estimate-only {
+  background: transparent !important;
+  border: 2px dashed currentColor;
+  animation: none;
+}
+.trip-marker.is-estimate-only.state-green { color: var(--accent); }
+.trip-marker.is-estimate-only.state-amber { color: var(--amber); }
+.trip-marker.is-estimate-only.state-red   { color: var(--danger); }
+
+.swatch.cone {
+  background: linear-gradient(90deg, transparent, var(--text-secondary), transparent);
+  width: 22px;
+  border-radius: 2px;
+}
+
+/* -- view tabs ------------------------------------------------------------ */
+
+.tabs { display: flex; gap: 4px; margin-bottom: 4px; }
+.tab {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 4px 2px;
+  margin-right: 14px;
+  cursor: pointer;
+}
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tab:hover { color: var(--text); }
+
+/* -- corridor stats ------------------------------------------------------- */
+
+.stats-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.stats-panel h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+.stats-summary { margin: 0 0 12px; font-size: 12px; color: var(--text-secondary); }
+.stats-bars { display: flex; flex-direction: column; gap: 6px; }
+.stats-bar {
+  display: grid;
+  grid-template-columns: 46px 1fr 84px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  /* Below the sample floor the bucket is shown but visibly not in play —
+     that distinction is the point, not a footnote. */
+  opacity: 0.42;
+}
+.stats-bar.in-use { opacity: 1; }
+.stats-hour { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.stats-track {
+  position: relative;
+  height: 8px;
+  background: var(--surface);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.stats-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  background: var(--accent);
+  border-radius: 4px;
+}
+/* p50 -> p90 tail: how much longer the slow crossings ran. */
+.stats-tail {
+  position: absolute;
+  top: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    90deg, var(--amber) 0 3px, transparent 3px 6px
+  );
+  opacity: 0.7;
+}
+.stats-value { color: var(--text-secondary); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* -- detail additions ----------------------------------------------------- */
+
+.detail-grid .span-2 { grid-column: 1 / -1; }
+
+.record-row.is-history .record-value { color: var(--text-secondary); font-style: italic; }
+.record-row.is-declared .record-value { color: var(--amber); }
+
+/* -- resolve confirmation -------------------------------------------------- */
+
+.resolve-confirm {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid rgba(224,101,79,.4);
+  background: rgba(224,101,79,.08);
+  border-radius: 12px;
+}
+.resolve-confirm p { margin: 0 0 12px; font-size: 13px; line-height: 1.5; }
+.resolve-confirm-actions { display: flex; gap: 8px; }
+.resolve-confirm-actions .resolve-btn { margin: 0; flex: 1; }
+.resolve-btn.danger { background: var(--danger); color: #1a0b08; border-color: var(--danger); }
+.resolve-btn.ghost { background: transparent; color: var(--text-secondary); }
+.resolve-btn.ghost:hover { color: var(--text); }
+
+/* -- reduced motion -------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .trip-marker,
+  .trip-row .status-dot,
+  .live-indicator .dot {
+    animation: none !important;
+  }
+}
+
+
+/* ==========================================================================
+   Zone picker, change banner, keyboard sheet, handoff.
+   ========================================================================== */
+
+.zone-picker { display: block; margin-top: 8px; }
+.zone-picker select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  max-width: 100%;
+}
+.zone-picker select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.zone-map-note {
+  margin: 0 0 14px;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* -- change banner --------------------------------------------------------- */
+
+.change-banner {
+  flex: none;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(230,185,77,.4);
+  background: rgba(230,185,77,.08);
+  border-radius: 12px;
+}
+.change-banner-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--amber);
+}
+.change-banner ul { margin: 0; padding-left: 18px; }
+.change-banner li {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.change-banner li.muted { color: var(--text-muted); }
+
+/* A row that moved while nobody was watching keeps a marker until the
+   banner is dismissed, so the banner and the queue agree. */
+.trip-row.changed-while-away {
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+/* -- keyboard sheet -------------------------------------------------------- */
+
+.shortcut-hint {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 60;
+  width: 260px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  box-shadow: 0 18px 40px rgba(0,0,0,.45);
+}
+.shortcut-hint h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+.shortcut-hint dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  font-size: 12.5px;
+}
+.shortcut-hint dt {
+  font-family: ui-monospace, monospace;
+  color: var(--text);
+  white-space: nowrap;
+}
+.shortcut-hint dd { margin: 0; color: var(--text-secondary); }
+
+/* -- handoff --------------------------------------------------------------- */
+
+#detail-handoff { margin-bottom: 8px; }
