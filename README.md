@@ -34,6 +34,306 @@ MENA Ignite Hackathon 2026 · Team Beyond Signal.
   design (see Security & Privacy doc §2), so a "live tracking dot" would
   misrepresent what the product actually knows.
 
+## What was added after the first working build
+
+The four components above were complete and demoable. This is what came out
+of a review pass over them — one security fix, a set of measured
+optimisations, and the product changes that came with actually using the
+thing.
+
+### The escalation ladder gained a rung below Tier 1
+
+`ACTIVE -> TIER0_CHECKING -> OVERDUE -> TIER1_ALERTED -> TIER2_ESCALATED`
+
+When the monitoring window expires and the network says the handset is
+reachable again, SignalGuard asks the **traveller** before it tells any
+human. Answering "I'm fine" closes the trip with nobody contacted. Not
+answering costs 90 seconds (`tier0_grace_sec`) and then produces exactly
+the Tier 1 that would have fired anyway.
+
+This restores the silent-happy-path promise in the Security & Privacy doc
+(§7) that the WhatsApp-on-entry change deviated from — as a feature rather
+than a retraction. A dark handset skips Tier 0 entirely: pinging a phone
+with no signal buys nothing and would only delay the alarm.
+
+`tests/test_new_features.py::test_tier0_cannot_suppress_an_alarm` is the
+one that matters. Tier 0 delays escalation by design, and a delay mechanism
+with a bug in it is indistinguishable from a suppression mechanism.
+
+### Quality on Demand moved to the reconnection edge
+
+QoD used to be requested at the entry gate — applying a connectivity boost
+to a handset that was seconds from losing signal entirely. It is now judged
+at entry (`trip.qod_warranted`) and **spent** when the device comes back,
+where the bandwidth actually buys something: position upload, the all-clear
+to a waiting contact, queued data flushing. Same API, same one session per
+crossing.
+
+### Corridor times are learned, not hardcoded
+
+`nominal_crossing_min` was one hand-set constant (75 for Highway 15) —
+identical at 3am on an empty road and 5pm behind a truck convoy. Every
+completed crossing now writes a `crossing_history` row, and once a
+(zone, hour-of-day) bucket has `corridor_stats_min_samples` **clean**
+crossings, the agent plans against the observed p50 and sizes the buffer
+with the observed p90.
+
+Escalated crossings are excluded from the baseline. They are real durations
+but they are evidence about an incident, not about how long the road
+normally takes — counting them would make the system less likely to alarm
+the more often it had to, which is exactly backwards.
+
+The dashboard shows this per hour, including which buckets are still below
+the sample floor.
+
+### Dead zones can discover themselves
+
+Every crossing already makes a real Location Retrieval call and a real
+reachability check, so the network has been describing its own coverage
+holes all along. `coverage_observations` keeps them; `GET /zones/candidates`
+returns grid cells that look like holes and are not already registered.
+
+Candidates are proposals, never live geofences — promotion is a deliberate
+`POST /zones/candidates/{cell}/promote`, because arming a geofence on a
+guess would page real contacts about a corridor nobody has surveyed. Rows
+carry no traveller id and positions are snapped to a ~5.5 km grid before
+use: this aggregates coverage, not people (Security & Privacy §2).
+
+### Convoy mode
+
+Two travellers entering the same corridor within `convoy_window_min` are
+travelling together for practical purposes. When one goes overdue and a
+peer is already out the far side, the peer lands in the escalation record —
+somebody who drove that exact road minutes ago is a far better first check
+than a contact 400 km away. Membership is derived from entry time, never
+declared.
+
+A peer can resolve a trip. A peer can never delay one; the Tier 1 deadline
+is untouched by their existence.
+
+### Device Reachability Status runs on the subscription form
+
+Technical Feasibility §2 calls this out as a design improvement over
+polling — "it removes polling entirely, which cuts per-crossing API cost to
+near zero and means reconnection is detected within the operator's
+notification latency rather than within one poll interval" — and §8 prices
+the API at ~$0 per crossing on that basis. The code had the retrieve
+endpoint wired up and the subscription helper sitting unused, which is the
+superseded design the doc explicitly supersedes.
+
+Arming a zone now creates a real Device Reachability Status subscription
+alongside the two gate subscriptions (confirmed live: `201` from
+`POST /device-status/device-reachability-status-subscriptions/v0.8/subscriptions`),
+with `/hooks/reachability` as its sink. Pushed state is held on the
+traveller, so the Tier 0 gate reads the answer the network already gave
+instead of spending a CAMARA call to ask again.
+
+The request body follows Nokia's own portal reference
+(`docs/Network_as_Code_API_Full.pdf`) rather than the sample in
+`docs/nokia-api-catalog.md`, which is a partial: it omits `protocol` and
+`config.subscriptionDetail.device`, so a body built from it never says
+which line to watch, and its event type (`...v0.reachable`) is not the one
+v0.8 publishes (`...v0.reachability-data`).
+
+The retrieve endpoint stays as the redundancy path — a lapsed subscription
+or a lost notification — and a push from before the trip opened is not
+trusted, because a stale "reachable" would offer Tier 0 to a handset that
+is dark. `test_a_pushed_dark_handset_skips_tier0_without_a_camara_call` and
+`test_a_stale_push_from_before_the_crossing_is_not_trusted` cover both
+directions.
+
+### Reachability is the primary exit signal
+
+A traveller who leaves the corridor by a side road never crosses the exit
+gate. Gate-only exit detection turned that ordinary event into a Tier 1
+alarm about somebody already home. The gate is now a confirmation of
+something the network usually reports first; `trip.exit_signal` records
+which fired.
+
+### Traveller-declared stops
+
+`POST /travellers/me/planned-stop {minutes}` extends the window without
+touching monitoring. The commonest reason a crossing runs long is a person
+who stopped, and the real cost of those false alarms is not the one message
+— it is that a contact who gets a few of them stops taking them seriously.
+
+### Position is a range, not a point
+
+The dashboard drew a dot at an interpolated position, visually identical to
+a real GPS fix, with the caveat in small print under the map. It now draws
+the range the system can actually defend (`uncertainty.py`), widening with
+time since the entry-gate snapshot — the only real fix this system ever
+holds.
+
+Beyond honesty: a Tier 2 handoff needs a *search area*. A point is not one;
+it is a false one, and a team sent to a false point has spent the only
+resource that matters.
+
+### Correctness fixes from the doc-conformance pass
+
+**The agent read wall time, not the virtual clock.** `agent/graph.py` took
+its hour-of-day from `datetime.now(timezone.utc)` while `corridor_stats`
+writes its history bucket from `trip.entered_at`, which is the virtual
+clock. In any run where `/demo/clock/advance` crossed an hour boundary the
+two never named the same bucket, so the learned corridor time could not be
+read back at all — and the hour handed to the model was not the hour the
+crossing happened in, which matters because night is a risk input.
+Reproduced with the clock advanced three hours: `entered_at` 20:27, record
+`hour=17`. Now `clock.now().hour`.
+
+**A timestamp that broke the naive-UTC convention.** `nokia_client`'s
+success path logged an aware `datetime` to `api_log` while every other
+writer — its own error path, the WhatsApp client, `clock.py` — writes
+naive-UTC. `clock.py` says why that matters: mixing the two is what makes a
+later comparison raise `TypeError`. Invisible on SQLite, whose dialect
+strips tzinfo on the way in; not invisible on a backend that keeps the
+offset.
+
+**The SQLite file was only gitignored under `backend/`.** It is written
+there when the backend starts from that directory and to the repo root when
+it starts from here, and it holds traveller names, MSISDNs and contact
+numbers. Now ignored wherever it lands, along with local verification
+screenshots.
+
+### Security fix — stored XSS in the dispatcher console
+
+`dashboard/js/app.js` built trip rows with `innerHTML` and interpolated
+`traveller_name` raw. A traveller registering as
+`<img src=x onerror=...>` executed JavaScript in every dispatcher's browser
+on every poll — confirmed reproducible end to end, then fixed. All
+backend-derived text now goes through `textContent`; `TravellerIn.name` is
+additionally length-bounded server-side as a second layer.
+
+### Measured optimisations — network latency
+
+| change | before | after |
+|---|---|---|
+| `_gather_signals` — congestion + location concurrent | 375 ms | 253 ms |
+| `arm_zone` — two geofence creates concurrent | 402 ms | 219 ms |
+
+(medians of 8 runs against the live sandbox)
+
+Also: indexes on `trips.state`, `trips.traveller_id` and `api_log.ts`
+(`tick()` runs on five endpoints including both poll paths and was doing a
+full table scan); `/demo/api-log` is bounded.
+
+### Measured optimisations — the polled endpoints
+
+Everything above was about the calls that leave the process. This is the
+work the backend does *between* them, on the two paths that run on a timer
+forever: the dashboard's 3-second queue poll and the app's trip poll, both
+of which go through `state_machine.tick()`.
+
+`backend/tools/bench_hot_paths.py` is the harness — it drives the real ASGI
+app in-process with the five Nokia calls stubbed the way the tests stub
+them, so what it measures is this codebase's own SQL, ORM and serialization
+with no sandbox in the sample. Numbers below are medians of 120 samples,
+running the before and after alternately rather than back to back (the
+run-to-run spread on a laptop is wide enough to swamp a 15% change
+otherwise), reproduced across three rounds.
+
+| endpoint | before | after | at 60 live trips |
+|---|---|---|---|
+| `GET /dashboard/trips` (12 live) | 23.9 ms | **5.9 ms** | 35.8 ms -> 10.6 ms |
+| `GET /travellers/me/trip` | 19.7 ms | **5.5 ms** | 21.3 ms -> 5.6 ms |
+| `GET /dashboard/history` | 10.2 ms | **3.0 ms** | |
+| `GET /dashboard/zones/{id}/stats` | 8.8 ms | **2.6 ms** | |
+| `GET /zones/candidates` (4k observations) | 17.9 ms | **11.0 ms** | |
+
+The backend test suite went from 24.1 s to 10.6 s off the back of the same
+changes plus one fixture fix.
+
+**Connection pooling.** SQLAlchemy defaults a file-backed aiosqlite engine
+to `NullPool`, so every session checkout opened a brand-new SQLite
+connection — and aiosqlite runs each connection on its own worker thread,
+making that a thread spawn plus a file open plus two `PRAGMA`s. The poll
+paths take two checkouts per request (`tick()` commits and releases before
+the endpoint's own query runs), so the dashboard and the app were each
+paying for two new threads every few seconds, forever. This is the single
+biggest item in the table and it accounts for most of every row.
+
+Worth being explicit that this is **not** the `StaticPool` that db.py's
+docstring records as tried-and-reverted. StaticPool shares one connection
+between every session, which is what let concurrent transactions interleave
+and produce `StaleDataError`. A queue pool still hands each checkout its own
+distinct connection with its own transaction; it only stops throwing that
+connection away afterwards.
+
+**`tick()` asks the database which trips can move.** It used to select every
+trip in a live state and then compare deadlines in Python — so each poll,
+from each app and each dashboard, loaded and hydrated a full ORM `Trip` for
+every crossing currently in flight, and then in the overwhelmingly common
+case did nothing with any of them. The four deadline conditions are now a
+`WHERE` clause that is the exact SQL twin of the transition loop, so the
+quiet case is one indexed lookup returning no rows. That is why the app's
+poll is flat in the number of live trips after the change (5.5 ms at 12,
+5.6 ms at 60) and was not before: a traveller's own poll no longer pays for
+everybody else's crossing.
+
+**One statement instead of three per dashboard poll.** `corridor_km` came
+from a separate zone-registry read on every poll and the traveller came from
+a `selectinload` follow-up query; both now ride along on the row the trip is
+already being read from (outer join, so a trip whose zone was removed still
+appears in the queue rather than vanishing from the one screen meant to show
+every trip somebody is watching).
+
+**Skipping FastAPI's encoder on the polled reads.** FastAPI runs whatever a
+route returns through `jsonable_encoder` — a recursive walk testing every
+value against pydantic-model / dataclass / enum / date / Decimal. That was
+23% of `/dashboard/trips` CPU and all of it redundant: `serializers.py`
+already emits nothing but JSON primitives, by hand, because the demo
+contract pins those exact string shapes anyway. See `app/responses.py`;
+it is used only on the endpoints that are actually polled on a timer.
+
+**Smaller things.** `tick()` no longer re-`SELECT`s the rows it just wrote
+(`expire_on_commit=False` means the commit expires nothing, so a read-back
+can only return what is already in memory). `coverage.candidates` filters in
+`HAVING` rather than in Python, so its cost tracks how many coverage holes
+were found rather than how much of the map has been driven, and
+`_known_zone_cells` reads four floats per zone instead of whole ORM rows.
+The test fixture called `reset_db()` immediately before `POST /demo/reset`,
+which calls it again — every test was rebuilding the schema twice.
+
+### App and dashboard
+
+**App** — the BUFFER screen's progress bar claimed to be "downloading the
+offline map", under an indeterminate indicator tracking nothing; the map is
+bundled, and a fake progress bar is the last thing worth keeping in a
+product whose credibility rests on being straight about what it knows.
+Replaced with what is actually happening.
+
+The ACTIVE card now says *when* — "If you're not back by 19:07, we text
+your contact" — rather than leaving the traveller to do arithmetic on a
+"115 min window" while driving. The offline map carries the same countdown,
+which works with the radio dark because the deadline was fixed at entry.
+
+A daylight theme was added. Dark-only was a real failure in the one
+environment this app is guaranteed to be used in: a phone in a windshield
+mount on a desert highway at midday.
+
+GPS sampling now tiers by proximity (`GpsMode.idle/approach/crossing`)
+instead of running continuous high accuracy from launch to death — in a
+product whose risk model keys off battery at entry, and whose pitch is that
+detection is network-side so the phone doesn't have to do this. Polling
+follows the same logic: 3s in Tier 0, 5s during a crossing, 45s idle,
+stopped when backgrounded.
+
+Reconnection persists until acknowledged rather than vanishing after four
+seconds; entry, going dark, and Tier 0 fire haptics, because a driver is
+not looking at the phone.
+
+**Dashboard** — audible alert and title flash on escalation (a console
+where a Tier 2 lands in silence is an operational hole); a dedicated live
+region instead of `aria-live` on a list that repainted every 3 seconds; the
+list updates in place so focus and scroll survive; focus trap on the detail
+panel; a confirmation step on resolve; an explicit "updated 4s ago"
+readout; a history view, because an emergency centre that forgets every
+trip the moment it closes cannot answer the questions it exists to answer.
+
+Polling pauses on a hidden tab. Static assets carry a `?v=` query — with no
+build step, a browser silently running a previous build of `app.js` while
+the disk had the current one cost real debugging time.
+
 ## Repo layout
 
 ```
@@ -58,6 +358,39 @@ above) — the dashboard talks to it via the "Backend" field in its top bar
 ["*"]`) since this is a prototype with no auth — see the note in
 `backend/app/main.py` before shipping anything wider than a demo.
 
+### Demo controls — http://localhost:5500/demo.html
+
+A second page on the same static server that drives a crossing from the
+browser: reset & arm, enter/exit gate, go dark/reconnect, advance the
+virtual clock, and the two human replies (traveller answers Tier 0,
+contact stands the alarm down). It shows the live trip state and the real
+CAMARA calls with their latencies as they happen.
+
+Two deliberate limits.
+
+It is **not on the operator console**, it is its own page. `index.html` is
+the one screen whose job is to be believed; a "simulate a gate crossing"
+button next to a live trip queue tells a viewer the queue might be
+synthetic too. The console has no knowledge this page exists.
+
+It is **not a scenario runner**. `scripts/run_demo.py` owns the scenarios —
+the beat sequences, the narration, the pass/fail assertions — and its
+contract is frozen. A JavaScript copy of `scenario_overdue` would be a
+second source of truth for the one thing that must not break on recording
+day: the terminal run would keep passing while the browser one quietly
+drifted. So the page exposes the primitives instead, one button per
+endpoint the conductor already calls, and stepping through a scenario means
+pressing them in order. The conductor stays the thing you record.
+
+The page renders only when `GET /healthz` reports `demo: true`, which only
+happens when the backend is running with `SIGNALGUARD_DEMO_MODE=true` — in
+a production build the `/demo` router is never mounted and the panel says
+so instead of drawing a single button.
+
+Two additive fields were added to the backend for it, neither of which the
+conductor reads: `demo: true` on `/healthz`, and `auth_token` on
+`POST /demo/travellers` (the Tier 0 endpoint is traveller-authenticated).
+
 ## Running the backend
 
 ```bash
@@ -68,12 +401,15 @@ cp .env.example .env   # fill in NAC_API_KEY at minimum
 ./.venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Then, from the repo root:
+Then, from the repo root. `SIGNALGUARD_ENV_FILE` is required: the conductor
+loads `.env` from the current directory by default, but the real one lives
+in `backend/`, so without it every scenario stops at preflight with
+"NAC_API_KEY is not set".
 
 ```bash
-python scripts/run_demo.py --scenario happy
-python scripts/run_demo.py --scenario model-down
-python scripts/run_demo.py --scenario all --dry-run   # no sandbox calls, rehearsal only
+SIGNALGUARD_ENV_FILE=backend/.env python scripts/run_demo.py --scenario happy
+SIGNALGUARD_ENV_FILE=backend/.env python scripts/run_demo.py --scenario model-down
+SIGNALGUARD_ENV_FILE=backend/.env python scripts/run_demo.py --scenario all --dry-run
 ```
 
 Windows console note: the conductor prints Unicode box-drawing characters;
@@ -90,6 +426,15 @@ cd backend
 one test that matters most — it proves the alarm still fires on schedule
 when the LLM is disabled. See docs/SignalGuard_Technical_Feasibility.pdf
 §5.4/§6.
+
+The polled endpoints have a benchmark alongside the tests. It needs no
+sandbox key and touches no real database:
+
+```bash
+cd backend
+./.venv/Scripts/python tools/bench_hot_paths.py
+./.venv/Scripts/python tools/bench_hot_paths.py --trips 60 --iters 80
+```
 
 ## WhatsApp notifications — built, parked pending Twilio billing
 
