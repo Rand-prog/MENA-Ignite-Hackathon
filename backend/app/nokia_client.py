@@ -71,7 +71,13 @@ class NokiaClient:
         if self._log_fn:
             await self._log_fn(
                 {
-                    "ts": datetime.now(timezone.utc),
+                    # Naive-UTC, like every other timestamp written in this
+                    # system — see clock.py: mixing in an aware datetime is
+                    # what makes a later comparison raise TypeError. The
+                    # SQLite dialect happens to strip tzinfo on the way in,
+                    # so this was invisible here; it would not be on a
+                    # backend that keeps the offset.
+                    "ts": datetime.now(timezone.utc).replace(tzinfo=None),
                     "api": api,
                     "endpoint": f"{method} {path}",
                     "latency_ms": latency_ms,
@@ -161,19 +167,62 @@ class NokiaClient:
         )
         return resp.json() if resp.status_code < 400 else {"error": resp.text, "status": resp.status_code}
 
-    async def create_reachability_subscription(self, *, sink: str, access_token: str = "") -> dict:
+    async def create_reachability_subscription(
+        self, *, device_phone: str, sink: str, access_token: str = "",
+        max_events: int = 10,
+    ) -> dict:
+        """The subscription form — the one the product actually runs on.
+
+        docs/SignalGuard_Technical_Feasibility.pdf §2: reachability is
+        consumed "on change, via subscription", and §8 prices it at ~0 per
+        crossing on exactly that basis. The retrieve endpoint above stays
+        as the redundancy path for a crossing where no notification has
+        arrived yet.
+
+        The body follows Nokia's own portal reference
+        (docs/Network_as_Code_API_Full.pdf, createDeviceReachabilityStatus
+        Subscription-DS-RES-V080) rather than the sample in
+        docs/nokia-api-catalog.md, which is a partial: it omits `protocol`
+        and, more importantly, `config.subscriptionDetail.device`, so it
+        never says which device to watch. The event type there
+        (`...v0.reachable`) is not the one the v0.8 API publishes either —
+        it is `...v0.reachability-data`.
+
+        `sinkCredential` is sent only when there is a token to put in it.
+        An operator-issued token belongs here in production; sending the
+        field with an empty string would be claiming an authenticated sink
+        we do not have.
+        """
+        body: dict[str, Any] = {
+            "protocol": "HTTP",
+            "sink": sink,
+            "types": [
+                "org.camaraproject.device-reachability-status-subscriptions.v0.reachability-data"
+            ],
+            "config": {
+                "subscriptionDetail": {"device": {"phoneNumber": device_phone}},
+                "initialEvent": True,
+                "subscriptionMaxEvents": max_events,
+            },
+        }
+        if access_token:
+            body["sinkCredential"] = {
+                "credentialType": "ACCESSTOKEN",
+                "accessToken": access_token,
+                "accessTokenType": "bearer",
+            }
         resp = await self._call(
             "Device Reachability Status", "POST",
             "/device-status/device-reachability-status-subscriptions/v0.8/subscriptions",
-            json={
-                "sink": sink,
-                "sinkCredential": {"credentialType": "ACCESSTOKEN", "accessToken": access_token},
-                "types": [
-                    "org.camaraproject.device-reachability-status-subscriptions.v0.reachable"
-                ],
-            },
+            json=body,
         )
         return resp.json() if resp.status_code < 400 else {"error": resp.text, "status": resp.status_code}
+
+    async def delete_reachability_subscription(self, subscription_id: str) -> None:
+        await self._call(
+            "Device Reachability Status", "DELETE",
+            f"/device-status/device-reachability-status-subscriptions/v0.8/subscriptions/{subscription_id}",
+        )
 
     # -- preflight -----------------------------------------------------------
     async def list_geofence_subscriptions(self) -> httpx.Response:
