@@ -47,6 +47,12 @@ async def _seed_zones(session: AsyncSession) -> None:
 async def healthz(session: AsyncSession = Depends(get_session)):
     return {
         "ok": True,
+        # Additive: lets the dashboard's demo control panel know these
+        # endpoints exist before it renders a single synthetic-trigger
+        # button. This router is only mounted when SIGNALGUARD_DEMO_MODE is
+        # on, so reaching this line at all already means demo mode — the
+        # flag is here so the gate stays explicit if /healthz ever moves.
+        "demo": True,
         "nac": {
             "apis": [
                 "geofencing-subscriptions", "location-retrieval",
@@ -76,18 +82,32 @@ async def demo_travellers(body: TravellerIn, session: AsyncSession = Depends(get
         session, msisdn=body.msisdn, name=body.name,
         contacts=[c.model_dump() for c in body.contacts],
     )
-    return {"traveller_id": traveller.id}
+    # auth_token is additive (run_demo.py reads traveller_id only). The
+    # dashboard's demo panel needs it to call the traveller-authenticated
+    # endpoints — /travellers/me/tier0-response above all, which is the
+    # rung that closes a trip with nobody contacted.
+    return {"traveller_id": traveller.id, "auth_token": traveller.auth_token}
 
 
 @router.post("/demo/zones/{zone_id}/arm")
 async def demo_arm_zone(zone_id: str, body: ArmZoneIn, session: AsyncSession = Depends(get_session)):
     try:
-        entry_id, exit_id = await sm.arm_zone(
+        entry_id, exit_id, reach_id = await sm.arm_zone(
             session, nac_client, zone_id=zone_id, traveller_id=body.traveller_id,
         )
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
-    return {"entry_subscription_id": entry_id, "exit_subscription_id": exit_id}
+    # reachability_subscription_id is additive — run_demo.py reads the two
+    # gate ids only, and the contract's two keys are unchanged. It is
+    # surfaced because arming now creates a third real CAMARA subscription
+    # (Device Reachability Status, the subscription form — see
+    # state_machine.arm_zone), and a subscription the demo can't see is one
+    # nobody notices has lapsed. None when the sandbox declined it.
+    return {
+        "entry_subscription_id": entry_id,
+        "exit_subscription_id": exit_id,
+        "reachability_subscription_id": reach_id,
+    }
 
 
 @router.post("/demo/simulate-gate-event")
@@ -158,14 +178,28 @@ async def demo_contact_reply(body: ContactReplyIn, session: AsyncSession = Depen
 
 
 @router.get("/demo/api-log")
-async def demo_api_log(since: str | None = None, session: AsyncSession = Depends(get_session)):
+async def demo_api_log(
+    since: str | None = None, limit: int = 200,
+    session: AsyncSession = Depends(get_session),
+):
+    """Every real Nokia call, oldest first.
+
+    Bounded: this used to return the whole table on every request, and the
+    demo conductor polls it once per beat. `limit` takes the most recent N
+    and returns them still in ascending order, so the conductor's
+    "last 6 calls" view is unaffected while a long session can't turn one
+    poll into a full-table read."""
+    limit = max(1, min(1000, limit))
     stmt = select(ApiLogEntry).order_by(ApiLogEntry.ts.asc())
     if since:
         since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
         since_dt = since_dt.replace(tzinfo=None)  # naive-UTC convention, see clock.py
         stmt = stmt.where(ApiLogEntry.ts >= since_dt)
-    result = await session.execute(stmt)
-    rows = result.scalars().all()
+    # Newest N, then flipped back to ascending — a plain ascending LIMIT
+    # would return the *oldest* N, which is the opposite of useful.
+    count_stmt = stmt.order_by(None).order_by(ApiLogEntry.ts.desc()).limit(limit)
+    result = await session.execute(count_stmt)
+    rows = list(reversed(result.scalars().all()))
     return [
         {
             "ts": r.ts.isoformat(), "api": r.api, "endpoint": r.endpoint,
