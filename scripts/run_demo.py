@@ -747,10 +747,17 @@ class Conductor:
         if self.hold:
             time.sleep(self.hold)
         if self.step:
-            try:
-                input(self.con.dim("           ⏎ next beat "))
-            except (EOFError, KeyboardInterrupt):
-                raise DemoFailure("stopped by operator")
+            while True:
+                try:
+                    ans = input(
+                        self.con.dim("           type 'next' to continue (or 'q' to stop) ")
+                    ).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    raise DemoFailure("stopped by operator")
+                if ans in ("next", "n"):
+                    break
+                if ans in ("q", "quit"):
+                    raise DemoFailure("stopped by operator")
 
     # -- helpers -----------------------------------------------------------
     def wait_for_state(self, expected: set[str], timeout: float = 90.0,
