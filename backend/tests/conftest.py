@@ -17,7 +17,6 @@ os.environ.setdefault("GOOGLE_API_KEY", "")  # forces the deterministic fallback
 
 import httpx  # noqa: E402
 
-from app.db import reset_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.nac_singleton import nac_client  # noqa: E402
 from app.whatsapp_singleton import whatsapp_client  # noqa: E402
@@ -47,7 +46,13 @@ async def _fake_create_qod_session(**kw):
 
 
 async def _fake_retrieve_reachability(**kw):
-    return {"connectivityStatus": "CONNECTED_DATA"}
+    # Real sandbox shape (confirmed live) — no connectivityStatus enum,
+    # see app/agent/tools.py's check_device_reachability docstring.
+    return {"reachable": True, "connectivity": ["DATA"]}
+
+
+async def _fake_create_reachability_subscription(**kw):
+    return {"id": "sub_reach_fake", "startsAt": "2026-08-30T12:00:00Z"}
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +65,10 @@ def _patch_nokia(monkeypatch):
     monkeypatch.setattr(nac_client, "query_congestion", _fake_query_congestion)
     monkeypatch.setattr(nac_client, "create_qod_session", _fake_create_qod_session)
     monkeypatch.setattr(nac_client, "retrieve_reachability", _fake_retrieve_reachability)
+    monkeypatch.setattr(
+        nac_client, "create_reachability_subscription",
+        _fake_create_reachability_subscription,
+    )
     yield
 
 
@@ -83,7 +92,11 @@ async def client(sent_whatsapp_messages):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as ac:
-        await reset_db()
+        # /demo/reset already calls reset_db() itself (drop_all +
+        # create_all) before re-seeding the zone registry and resetting the
+        # clock and runtime state — this fixture used to call it a second
+        # time first, so every one of these tests rebuilt the whole schema
+        # twice before it ran.
         resp = await ac.post("/demo/reset")
         assert resp.status_code == 200
         yield ac

@@ -102,7 +102,12 @@ async def test_zones_endpoint_lists_seeded_zone(client):
     assert "entry_gate" in zones[0] and "exit_gate" in zones[0]
 
 
-async def test_duplicate_msisdn_registration_returns_clean_409(client):
+async def test_duplicate_msisdn_registration_attaches_in_demo_mode(client):
+    """In demo mode (see conftest — every test runs with this on), a second
+    registration for the same msisdn attaches to the existing traveller
+    instead of bouncing with 409 — the conductor and a test app sharing one
+    fixed identity is a normal workflow, not an error. See real.py's
+    register_traveller for the non-demo-mode strict 409 this skips."""
     body = {
         "msisdn": "+962790000099", "name": "Sultan",
         "contacts": [{"name": "Omar", "msisdn": "+962790000002"}],
@@ -111,8 +116,9 @@ async def test_duplicate_msisdn_registration_returns_clean_409(client):
     assert first.status_code == 200
 
     second = await client.post("/travellers", json=body)
-    assert second.status_code == 409
-    assert "already registered" in second.json()["detail"]
+    assert second.status_code == 200
+    assert second.json()["traveller_id"] == first.json()["traveller_id"]
+    assert second.json()["auth_token"] == first.json()["auth_token"]
 
 
 async def test_exit_gate_while_overdue_resolves_not_stuck(client):
