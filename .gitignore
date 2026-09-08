@@ -10,9 +10,20 @@ venv/
 *.egg-info/
 .pytest_cache/
 
-# db
-backend/signalguard.db
-backend/*.db-journal
+# db — the sqlite file holds traveller names, MSISDNs and contact numbers,
+# so it is ignored wherever it lands. It is written to backend/ when the
+# backend is started from that directory (its DATABASE_URL is relative) and
+# to the repo root when it is started from here, and only the first of
+# those was covered before.
+*.db
+*.db-journal
+# WAL mode (see backend/app/db.py) leaves these two alongside the db file.
+*.db-wal
+*.db-shm
+
+# local verification screenshots / ui dumps, not part of the deliverable
+app/*.png
+app/ui.xml
 
 # flutter
 app/build/
