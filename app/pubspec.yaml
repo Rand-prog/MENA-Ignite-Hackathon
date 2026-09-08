@@ -41,6 +41,11 @@ dependencies:
   shared_preferences: ^2.3.3
   connectivity_plus: ^6.1.0
   battery_plus: ^6.2.1
+  # Ongoing notification while a crossing is live. The product tells
+  # people to close the app and go, which only works if something on
+  # the phone still shows it is watching — see services/ongoing_notice.dart.
+  # No web support; every call site is guarded with kIsWeb.
+  flutter_local_notifications: ^18.0.1
 
 dev_dependencies:
   flutter_test:

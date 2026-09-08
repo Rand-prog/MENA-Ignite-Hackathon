@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/contact.dart';
@@ -18,6 +19,7 @@ class StorageService {
   static const _kContacts = 'contacts';
   static const _kZone = 'zone';
   static const _kBackendUrl = 'backend_url';
+  static const _kThemeMode = 'theme_mode';
 
   final SharedPreferences _prefs;
   StorageService(this._prefs);
@@ -72,4 +74,30 @@ class StorageService {
   String get backendUrl =>
       _prefs.getString(_kBackendUrl) ?? 'http://10.0.2.2:8000';
   Future<void> setBackendUrl(String v) => _prefs.setString(_kBackendUrl, v);
+
+  /// Night / daylight / follow-the-system.
+  ///
+  /// Defaults to night: the app is used in a car and often after dark. But
+  /// a traveller who switched to daylight once — because a near-black
+  /// screen is unreadable on a desert highway at noon — wants that choice
+  /// to stick, so it is persisted rather than being a per-session toggle.
+  ThemeMode get themeMode {
+    switch (_prefs.getString(_kThemeMode)) {
+      case 'light':
+        return ThemeMode.light;
+      case 'system':
+        return ThemeMode.system;
+      default:
+        return ThemeMode.dark;
+    }
+  }
+
+  Future<void> setThemeMode(ThemeMode mode) => _prefs.setString(
+        _kThemeMode,
+        switch (mode) {
+          ThemeMode.light => 'light',
+          ThemeMode.system => 'system',
+          ThemeMode.dark => 'dark',
+        },
+      );
 }

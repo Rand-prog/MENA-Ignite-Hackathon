@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/contact.dart';
 import '../services/api_client.dart';
 import '../services/location_service.dart';
+import '../services/ongoing_notice.dart';
 import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/step_scaffold.dart';
@@ -16,10 +17,21 @@ class OnboardingScreen extends StatefulWidget {
   final StorageService storage;
   final LocationService location;
 
+  /// Passed straight through to HomeShell on completion.
+  ///
+  /// Without these, a freshly-onboarded install landed on a HomeShell with
+  /// a null theme callback and the daylight toggle silently did nothing
+  /// until the app was restarted — i.e. it was broken on the only path a
+  /// real user takes, and working on the one used to test it.
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
+
   const OnboardingScreen({
     super.key,
     required this.storage,
     required this.location,
+    this.themeMode = ThemeMode.dark,
+    this.onThemeModeChanged,
   });
 
   @override
@@ -28,12 +40,22 @@ class OnboardingScreen extends StatefulWidget {
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final _pageController = PageController();
-  static const _stepCount = 4;
+  static const _stepCount = 5;
+
+  final _notice = OngoingNotice();
 
   bool _locationGranted = false;
   bool _networkAuthorised = false;
   bool _requestingLocation = false;
 
+  // Fixed, matching scripts/run_demo.py's Config.msisdn default — the
+  // conductor resets the whole travellers table at the start of every
+  // scenario (Conductor.arm() -> backend.reset()), so this number is free
+  // again each time regardless of who held it last. Sharing the identity
+  // means a scenario's crossing shows up live in this app, not just on
+  // the dashboard. If the backend gets reset out from under an
+  // already-onboarded install, HomeShell's 401 handling sends the user
+  // back here automatically — just submit again.
   final _nameController = TextEditingController(text: 'Sultan');
   final _msisdnController = TextEditingController(text: '+962790000001');
   final List<TextEditingController> _contactNameCtrls = [
@@ -44,6 +66,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   ];
   bool _submitting = false;
   String? _error;
+
+  // Test-alert step state.
+  bool _testSending = false;
+  Map<String, dynamic>? _testResult;
+  String? _testError;
 
   void _goTo(int step) {
     _pageController.animateToPage(
@@ -107,14 +134,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       await widget.storage.setOnboarded(true);
 
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => HomeShell(
-            storage: widget.storage,
-            location: widget.location,
-          ),
-        ),
-      );
+      // Registration succeeded — go to the proof step rather than straight
+      // to the home screen. See _testStep for why that step exists.
+      _goTo(4);
     } on ApiException catch (e) {
       // The backend was reached fine and rejected the request cleanly
       // (e.g. this phone number is already registered) — say that, not
@@ -139,8 +161,166 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           _locationStep(),
           _networkAuthStep(),
           _contactsStep(),
+          _testStep(),
         ],
       ),
+    );
+  }
+
+  Future<void> _sendTest() async {
+    setState(() {
+      _testSending = true;
+      _testError = null;
+    });
+    try {
+      final result = await ApiClient(widget.storage).sendTestAlert();
+      if (mounted) setState(() => _testResult = result);
+    } catch (e) {
+      if (mounted) setState(() => _testError = '$e');
+    } finally {
+      if (mounted) setState(() => _testSending = false);
+    }
+  }
+
+  Future<void> _enterApp() async {
+    // Ask for the notification grant here, with the other permissions,
+    // rather than at the start of a crossing — which is while driving.
+    await _notice.init();
+    await _notice.requestPermission();
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => HomeShell(
+          storage: widget.storage,
+          location: widget.location,
+          themeMode: widget.themeMode,
+          onThemeModeChanged: widget.onThemeModeChanged,
+        ),
+      ),
+    );
+  }
+
+  /// Step 5 — prove the alert actually reaches a human.
+  ///
+  /// Everything before this point is unverified assumption. The traveller
+  /// typed a phone number, and nothing in the system ever checks it: if a
+  /// digit is wrong, every tier still fires, every record is still
+  /// written, and the message goes nowhere. Nobody finds out until the one
+  /// moment it matters.
+  ///
+  /// It also fixes the other half of the problem — that setup ends with a
+  /// person being told, correctly, to close the app and never open it
+  /// again, having seen no evidence any of it works.
+  ///
+  /// The result is reported honestly, including the "no provider
+  /// configured" case. A green tick over a message nobody received would
+  /// be worse than no test at all: it converts an unknown into a false
+  /// certainty.
+  Widget _testStep() {
+    final c = AppPalette.of(context);
+    final result = _testResult;
+    final delivery = result?['delivery'] as String?;
+
+    return StepScaffold(
+      stepIndex: 4,
+      stepCount: _stepCount,
+      title: 'Check it reaches them',
+      subtitle:
+          'One test message, so you know the number works. Nothing else in '
+          'SignalGuard ever checks it — and a wrong digit means an alert '
+          'that goes nowhere on the day it matters.',
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (result == null && _testError == null)
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Icon(
+                    Icons.forward_to_inbox_rounded,
+                    size: 80,
+                    color: c.textMuted,
+                  ),
+                ),
+              ),
+            if (_testError != null)
+              _TestBanner(
+                icon: Icons.error_outline_rounded,
+                tone: c.danger,
+                title: "Couldn't send the test",
+                body: _testError!,
+              ),
+            if (delivery == 'sent')
+              _TestBanner(
+                icon: Icons.mark_email_read_rounded,
+                tone: c.accent,
+                title: 'Sent',
+                body: 'Ask them to confirm it arrived. If it did not, go '
+                    'back and check the number.',
+              ),
+            if (delivery == 'not_configured')
+              _TestBanner(
+                icon: Icons.info_outline_rounded,
+                tone: c.amber,
+                title: 'No messaging provider connected',
+                body: 'The message was composed and addressed correctly, but '
+                    'this build has no SMS or WhatsApp provider wired up, so '
+                    'nothing was actually delivered. Your contact is saved — '
+                    'the number itself is still unverified.',
+              ),
+            if (delivery == 'no_contacts')
+              _TestBanner(
+                icon: Icons.person_off_outlined,
+                tone: c.danger,
+                title: 'No contacts saved',
+                body: 'Go back and add at least one emergency contact.',
+              ),
+            if (result != null) ...[
+              const SizedBox(height: 14),
+              for (final entry in (result['contacts'] as List? ?? []))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      Icon(
+                        (entry['sent'] as bool? ?? false)
+                            ? Icons.check_circle_outline_rounded
+                            : Icons.radio_button_unchecked_rounded,
+                        size: 16,
+                        color: (entry['sent'] as bool? ?? false)
+                            ? c.accent
+                            : c.textMuted,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '${entry['name']} · ${entry['msisdn']}',
+                          style: TextStyle(color: c.textSecondary, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+      primaryLabel: _testSending
+          ? 'Sending…'
+          : (result == null ? 'Send a test message' : 'Finish setup'),
+      onPrimary: _testSending
+          ? null
+          : (result == null ? _sendTest : _enterApp),
+      primaryEnabled: !_testSending,
+      // Skipping is allowed — this is a check, not a gate, and a traveller
+      // whose contact is asleep should not be blocked from finishing.
+      secondary: result == null && !_testSending
+          ? TextButton(
+              onPressed: _enterApp,
+              child: const Text('Skip — I\'ll check later'),
+            )
+          : null,
     );
   }
 
@@ -157,7 +337,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         child: Icon(
           Icons.podcasts_rounded,
           size: 96,
-          color: AppColors.accent.withValues(alpha: 0.85),
+          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.85),
         ),
       ),
       primaryLabel: 'Get started',
@@ -174,24 +354,29 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           'Used only inside a monitored dead zone, to show your position '
           'on the offline map and as a local backup if the network signal '
           'is delayed. Detection itself runs on the network, not your GPS.',
-      body: Column(
-        children: [
-          const Spacer(),
-          Icon(
-            _locationGranted
-                ? Icons.check_circle_rounded
-                : Icons.location_on_outlined,
-            size: 88,
-            color: _locationGranted ? AppColors.accent : AppColors.textMuted,
-          ),
-          const Spacer(),
-        ],
+      // Center, not a bare Column — StepScaffold's outer Column is
+      // left-aligned (for the title/subtitle text), and a plain Column
+      // shrink-wraps to its widest child under that alignment rather than
+      // filling the row, which pins a lone icon to the left edge instead
+      // of centering it. Center always fills the available bounded width
+      // regardless, so it doesn't inherit that problem.
+      body: Center(
+        child: Icon(
+          _locationGranted
+              ? Icons.check_circle_rounded
+              : Icons.location_on_outlined,
+          size: 88,
+          color: _locationGranted
+              ? AppPalette.of(context).accent
+              : AppPalette.of(context).textMuted,
+        ),
       ),
       primaryLabel: _locationGranted
           ? 'Continue'
           : (_requestingLocation ? 'Requesting…' : 'Allow all the time'),
       onPrimary: _locationGranted ? () => _goTo(2) : _requestLocation,
       primaryEnabled: !_requestingLocation,
+      onBack: _requestingLocation ? null : () => _goTo(0),
     );
   }
 
@@ -210,39 +395,37 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           'detection for your number. This is separate from the location '
           'permission above, and you can revoke it at any time through '
           'your carrier — independently of this app.',
-      body: Column(
-        children: [
-          const Spacer(),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 300),
-            child: _networkAuthorised
-                ? Column(
-                    key: const ValueKey('done'),
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.verified_rounded,
-                        size: 88,
-                        color: AppColors.accent,
-                      ),
-                      const SizedBox(height: 16),
-                      const Text('Authorised at your operator'),
-                    ],
-                  )
-                : Icon(
-                    Icons.cell_tower_rounded,
-                    key: const ValueKey('pending'),
-                    size: 88,
-                    color: AppColors.textMuted,
-                  ),
-          ),
-          const Spacer(),
-        ],
+      // Center wrapper — same reason as _locationStep above.
+      body: Center(
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          child: _networkAuthorised
+              ? Column(
+                  key: const ValueKey('done'),
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.verified_rounded,
+                      size: 88,
+                      color: AppPalette.of(context).accent,
+                    ),
+                    const SizedBox(height: 16),
+                    const Text('Authorised at your operator'),
+                  ],
+                )
+              : Icon(
+                  Icons.cell_tower_rounded,
+                  key: const ValueKey('pending'),
+                  size: 88,
+                  color: AppPalette.of(context).textMuted,
+                ),
+        ),
       ),
       primaryLabel: _networkAuthorised ? 'Continue' : 'Authorise',
       onPrimary: _networkAuthorised
           ? () => _goTo(3)
           : () => setState(() => _networkAuthorised = true),
+      onBack: () => _goTo(1),
     );
   }
 
@@ -295,17 +478,87 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               ),
             if (_error != null) ...[
               const SizedBox(height: 8),
-              Text(
+              Semantics(
+                liveRegion: true,
+                child: Text(
                 _error!,
-                style: const TextStyle(color: AppColors.danger, fontSize: 13),
-              ),
+                style: TextStyle(
+                  color: AppPalette.of(context).danger,
+                  fontSize: 13,
+                ),
+              )),
             ],
           ],
         ),
       ),
-      primaryLabel: _submitting ? 'Setting up…' : 'Done',
+      primaryLabel: _submitting ? 'Setting up…' : 'Next',
       onPrimary: _finish,
       primaryEnabled: !_submitting,
+      onBack: _submitting ? null : () => _goTo(2),
+    );
+  }
+}
+
+
+class _TestBanner extends StatelessWidget {
+  final IconData icon;
+  final Color tone;
+  final String title;
+  final String body;
+
+  const _TestBanner({
+    required this.icon,
+    required this.tone,
+    required this.title,
+    required this.body,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppPalette.of(context);
+    return Semantics(
+      liveRegion: true,
+      label: '$title. $body',
+      excludeSemantics: true,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: tone.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: tone.withValues(alpha: 0.35)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: tone, size: 18),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      color: tone,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    body,
+                    style: TextStyle(
+                      color: c.textSecondary,
+                      fontSize: 12,
+                      height: 1.45,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -2,7 +2,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../theme/app_theme.dart';
 
 /// A small compass-style bearing indicator, used alongside the real map
 /// viewport (see map_viewport.dart) to show the real-world direction back
@@ -18,14 +17,16 @@ class BearingArrow extends StatelessWidget {
       height: 84,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: AppColors.surface,
-        border: Border.all(color: AppColors.border),
+        color: const Color(0xFF141B19),
+        border: Border.all(color: const Color(0xFF283330)),
       ),
       child: Transform.rotate(
         angle: bearingDegrees * math.pi / 180,
         child: const Icon(
           Icons.navigation_rounded,
-          color: AppColors.amber,
+          // The bearing arrow sits over map tiles, so it keeps its own
+          // fixed amber rather than following the light/dark palette.
+          color: Color(0xFFE6B94D),
           size: 36,
         ),
       ),

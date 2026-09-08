@@ -16,6 +16,7 @@ class StepScaffold extends StatelessWidget {
   final VoidCallback? onPrimary;
   final bool primaryEnabled;
   final Widget? secondary;
+  final VoidCallback? onBack;
 
   const StepScaffold({
     super.key,
@@ -28,17 +29,41 @@ class StepScaffold extends StatelessWidget {
     required this.onPrimary,
     this.primaryEnabled = true,
     this.secondary,
+    this.onBack,
   });
 
   @override
   Widget build(BuildContext context) {
+    final c = AppPalette.of(context);
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            if (onBack != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  children: [
+                    IconButton(
+                      onPressed: onBack,
+                      icon: const Icon(Icons.arrow_back_rounded),
+                      color: c.textSecondary,
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 40,
+                        minHeight: 40,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Semantics(
+              label: 'Step ${stepIndex + 1} of $stepCount',
+              excludeSemantics: true,
+              child: Row(
               children: List.generate(stepCount, (i) {
                 final active = i <= stepIndex;
                 return Expanded(
@@ -46,19 +71,22 @@ class StepScaffold extends StatelessWidget {
                     height: 4,
                     margin: EdgeInsets.only(right: i == stepCount - 1 ? 0 : 6),
                     decoration: BoxDecoration(
-                      color: active ? AppColors.accent : AppColors.border,
+                      color: active ? c.accent : c.border,
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
                 );
               }),
-            ),
+            )),
             const SizedBox(height: 28),
-            Text(title, style: Theme.of(context).textTheme.headlineMedium),
+            Semantics(
+              header: true,
+              child: Text(title, style: Theme.of(context).textTheme.headlineMedium),
+            ),
             if (subtitle != null) ...[
               const SizedBox(height: 8),
               Text(subtitle!, style: Theme.of(context).textTheme.bodyLarge
-                  ?.copyWith(color: AppColors.textSecondary)),
+                  ?.copyWith(color: c.textSecondary)),
             ],
             const SizedBox(height: 28),
             Expanded(child: body),

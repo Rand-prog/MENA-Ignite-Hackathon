@@ -27,7 +27,12 @@ class MapViewport extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final c = AppPalette.of(context);
     final focus = focusPx ?? Offset(map.widthPx / 2, map.heightPx / 2);
+    // pxPerKm runs two Mercator projections; hoisted out of the
+    // LayoutBuilder below so it is computed once per build rather than on
+    // every layout pass.
+    final pxPerKm = map.pxPerKm;
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
@@ -38,12 +43,12 @@ class MapViewport extends StatelessWidget {
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
             final vh = constraints.maxHeight;
-            final zoom = (vh / (viewKm * map.pxPerKm)).clamp(0.05, 4.0);
+            final zoom = (vh / (viewKm * pxPerKm)).clamp(0.05, 4.0);
             final dx = vw / 2 - focus.dx * zoom;
             final dy = vh / 2 - focus.dy * zoom;
 
             return Container(
-              color: AppColors.surface,
+              color: c.surface,
               child: Stack(
                 clipBehavior: Clip.hardEdge,
                 children: [
@@ -63,25 +68,34 @@ class MapViewport extends StatelessWidget {
                       filterQuality: FilterQuality.medium,
                     ),
                   ),
-                  // Subtle scrim so overlay markers/text stay legible over
-                  // whatever the map tile looks like underneath.
-                  Container(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          AppColors.bg.withValues(alpha: 0.25),
-                          Colors.transparent,
-                          AppColors.bg.withValues(alpha: 0.35),
-                        ],
+                  // Scrim, night only.
+                  //
+                  // Its job is to keep light-on-dark overlay text legible
+                  // over map tiles of unpredictable brightness. In
+                  // daylight the overlays are already dark-on-light, so
+                  // the scrim protects against a problem that no longer
+                  // exists — and washes out the terrain to do it. The map
+                  // is the entire point of this screen; dimming it for
+                  // nothing is a straight loss.
+                  if (!c.isDay)
+                    Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            c.bg.withValues(alpha: 0.25),
+                            Colors.transparent,
+                            c.bg.withValues(alpha: 0.35),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
                   if (routeTargetPx != null)
                     CustomPaint(
                       size: Size(vw, vh),
                       painter: _RouteLinePainter(
+                        color: c.amber,
                         from: Offset(vw / 2, vh / 2),
                         to: Offset(
                           vw / 2 + (routeTargetPx!.dx - focus.dx) * zoom,
@@ -98,16 +112,37 @@ class MapViewport extends StatelessWidget {
                   // Fixed centre dot — the traveller. Always dead centre;
                   // the map moves, not the dot, matching how nav apps
                   // read at highway speed.
-                  Center(child: _TravellerDot()),
+                  Center(child: _TravellerDot(color: c.accent)),
+                  // Scale bar. Distance existed only as the text "1.4 km
+                  // ahead"; the map itself could be read for direction and
+                  // not for distance, which is half of what a map is for
+                  // when you are deciding whether to walk it.
+                  Positioned(
+                    left: 10,
+                    bottom: 8,
+                    child: _ScaleBar(
+                      pxPerKm: pxPerKm * zoom,
+                      color: c.isDay ? Colors.black87 : Colors.white,
+                      halo: c.isDay ? Colors.white : Colors.black54,
+                    ),
+                  ),
                   Positioned(
                     right: 8,
                     bottom: 6,
                     child: Text(
                       map.attribution,
-                      style: const TextStyle(
+                      // Sits directly on map tiles, so it carries its own
+                      // contrast rather than inheriting the theme's text
+                      // colour — white-on-white in daylight otherwise.
+                      style: TextStyle(
                         fontSize: 9,
-                        color: Colors.white70,
-                        shadows: [Shadow(blurRadius: 2, color: Colors.black)],
+                        color: c.isDay ? Colors.black87 : Colors.white70,
+                        shadows: [
+                          Shadow(
+                            blurRadius: 2,
+                            color: c.isDay ? Colors.white : Colors.black,
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -140,12 +175,13 @@ class MapViewport extends StatelessWidget {
 class _RouteLinePainter extends CustomPainter {
   final Offset from;
   final Offset to;
-  _RouteLinePainter({required this.from, required this.to});
+  final Color color;
+  _RouteLinePainter({required this.from, required this.to, required this.color});
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = AppColors.amber
+      ..color = color
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round;
 
@@ -167,7 +203,9 @@ class _RouteLinePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _RouteLinePainter oldDelegate) =>
-      oldDelegate.from != from || oldDelegate.to != to;
+      oldDelegate.from != from ||
+      oldDelegate.to != to ||
+      oldDelegate.color != color;
 }
 
 class MarkerSpec {
@@ -190,7 +228,7 @@ class GateMarker extends StatelessWidget {
           height: 12,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: AppColors.textMuted,
+            color: const Color(0xFF64756F),
             border: Border.all(color: Colors.black45, width: 2),
           ),
         ),
@@ -198,7 +236,7 @@ class GateMarker extends StatelessWidget {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
-            color: AppColors.bg.withValues(alpha: 0.75),
+            color: Colors.black.withValues(alpha: 0.68),
             borderRadius: BorderRadius.circular(4),
           ),
           child: Text(
@@ -206,7 +244,7 @@ class GateMarker extends StatelessWidget {
             style: const TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.w700,
-              color: AppColors.textSecondary,
+              color: Colors.white,
               letterSpacing: 0.4,
             ),
           ),
@@ -217,30 +255,98 @@ class GateMarker extends StatelessWidget {
 }
 
 class _TravellerDot extends StatelessWidget {
+  final Color color;
+  const _TravellerDot({required this.color});
+
   @override
   Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Your position',
+      child: _dot(),
+    );
+  }
+
+  Widget _dot() {
     return Container(
       width: 30,
       height: 30,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: AppColors.accent.withValues(alpha: 0.22),
+        color: color.withValues(alpha: 0.22),
       ),
       child: Container(
         width: 14,
         height: 14,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: AppColors.accent,
+          color: color,
           border: Border.all(color: Colors.white, width: 2),
           boxShadow: [
-            BoxShadow(
-              color: AppColors.accent.withValues(alpha: 0.6),
-              blurRadius: 8,
-            ),
+            BoxShadow(color: color.withValues(alpha: 0.6), blurRadius: 8),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A real scale bar: picks a round distance that fits the current zoom and
+/// draws it, so the map can be read for how far as well as which way.
+class _ScaleBar extends StatelessWidget {
+  final double pxPerKm;
+  final Color color;
+  final Color halo;
+  const _ScaleBar({
+    required this.pxPerKm,
+    required this.color,
+    required this.halo,
+  });
+
+  /// Round numbers a person actually thinks in, smallest first.
+  static const _steps = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0];
+
+  @override
+  Widget build(BuildContext context) {
+    if (pxPerKm <= 0 || !pxPerKm.isFinite) return const SizedBox.shrink();
+    // The largest round distance that still fits in ~90px of bar.
+    var km = _steps.first;
+    for (final s in _steps) {
+      if (s * pxPerKm <= 90) km = s;
+    }
+    final width = km * pxPerKm;
+    if (width < 12) return const SizedBox.shrink();
+
+    return Semantics(
+      label: 'Map scale: ${km.toStringAsFixed(0)} kilometres',
+      excludeSemantics: true,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${km.toStringAsFixed(0)} km',
+            style: TextStyle(
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+              color: color,
+              shadows: [Shadow(blurRadius: 2, color: halo)],
+            ),
+          ),
+          const SizedBox(height: 2),
+          Container(
+            width: width,
+            height: 3,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(1.5),
+              // Same trick as the label's text shadow: the bar sits over
+              // map tiles of unknown brightness, so it carries its own
+              // contrast rather than assuming the terrain underneath.
+              boxShadow: [BoxShadow(color: halo, blurRadius: 2)],
+            ),
+          ),
+        ],
       ),
     );
   }
