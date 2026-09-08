@@ -67,3 +67,47 @@ async def notify_safe_exit(session: AsyncSession, wa: WhatsAppClient, trip: Trip
         f"and reconnected. Trip complete."
     )
     await _broadcast(wa, contacts, body)
+
+
+async def notify_test(
+    session: AsyncSession, wa: WhatsAppClient, traveller_id: str,
+) -> dict:
+    """A one-off "this is what an alert looks like" message, sent from
+    onboarding.
+
+    The reason this exists: a wrong digit in a contact's number makes the
+    entire escalation ladder terminate in a void, silently, and nobody
+    finds out until the one moment it matters. Nothing else in the system
+    ever verifies that number. A traveller finishes setup and then —
+    correctly — never opens the app again, with no evidence any of it
+    works.
+
+    Returns the ACTUAL delivery state per contact rather than a blanket
+    "sent". With Twilio unconfigured every send is a logged no-op (see
+    whatsapp_client.py), and reporting that as success would be precisely
+    the false reassurance this endpoint is supposed to remove.
+    """
+    traveller, contacts = await _contacts_for(session, traveller_id)
+    if not traveller or not contacts:
+        return {"delivery": "no_contacts", "contacts": []}
+
+    body = (
+        f"SignalGuard test message. {traveller.name} added you as their "
+        f"emergency contact. If they ever go quiet crossing a dead zone, "
+        f"this is where you'll hear about it. Nothing is wrong right now — "
+        f"no reply needed."
+    )
+    results = []
+    for contact in contacts:
+        outcome = await wa.send(to_msisdn=contact.msisdn, body=body)
+        results.append({
+            "name": contact.name,
+            "msisdn": contact.msisdn,
+            "sent": bool(outcome.get("sent")),
+            "reason": outcome.get("reason"),
+        })
+
+    return {
+        "delivery": "sent" if wa.enabled else "not_configured",
+        "contacts": results,
+    }
