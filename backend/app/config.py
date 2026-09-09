@@ -49,6 +49,17 @@ class Settings(BaseSettings):
 
     # Backend
     signalguard_demo_mode: bool = True
+    # Seconds to hold a trip in BUFFER before the agent runs, so the app's
+    # "preparing" screen is actually on screen long enough to be seen.
+    #
+    # Measured: without this, BUFFER lasts ~2.7s (the Nokia + Gemini calls)
+    # while the app polls every 45s when it has no trip. The approach
+    # screen the product's Phase 2 is built around was therefore a coin
+    # flip the viewer usually lost. This is a DEMO AID and nothing else --
+    # it is read only where signalguard_demo_mode is already true, and it
+    # makes every real crossing slower by exactly this much, which is why
+    # it defaults to 0 and has to be asked for.
+    signalguard_demo_buffer_hold_sec: int = 0
     database_url: str = "sqlite+aiosqlite:///./signalguard.db"
     # Nokia's sandbox validates that the sink hostname actually resolves
     # (INVALID_SINK / "Unresolvable callback hostname" otherwise) — the

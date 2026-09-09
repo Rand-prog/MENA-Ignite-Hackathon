@@ -233,6 +233,16 @@ async def simulate_gate_event(
         await session.commit()
         await session.refresh(trip)
 
+        # Demo aid, off by default. The BUFFER window above is real but
+        # short -- the agent's Nokia + Gemini calls take about 2.7 seconds,
+        # against an app that polls every 45 seconds when it holds no trip.
+        # So the "preparing" screen exists, is committed precisely so it
+        # can be observed, and is still almost never actually seen. This
+        # widens the window on request. It delays a real crossing by
+        # exactly this long, so it stays at 0 unless a demo asks for it.
+        if settings.signalguard_demo_mode and settings.signalguard_demo_buffer_hold_sec > 0:
+            await asyncio.sleep(settings.signalguard_demo_buffer_hold_sec)
+
         ctx = AgentContext(session=session, nac=nac, trip=trip, zone=zone)
         decision = await run_agent(
             ctx, model_enabled=runtime_state.agent_model_enabled,
