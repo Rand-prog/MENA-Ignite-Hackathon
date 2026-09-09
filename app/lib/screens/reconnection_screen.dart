@@ -26,7 +26,22 @@ class ReconnectionScreen extends StatelessWidget {
   final Trip? trip;
   final VoidCallback? onDismiss;
 
-  const ReconnectionScreen({super.key, this.trip, this.onDismiss});
+  /// The emergency contact's own name — see approach_screen.dart's
+  /// `contactLabel`. Optional; null keeps every sentence on "your contact",
+  /// which is what existing callers and tests get.
+  ///
+  /// This is the one place in the app where the name lands in a sentence
+  /// about someone who has *already* been woken. That is exactly why it
+  /// belongs here: "your contact was notified" is a status line, "we
+  /// notified Omar" is the thing the traveller has to go and put right.
+  final String? contactName;
+
+  const ReconnectionScreen({
+    super.key,
+    this.trip,
+    this.onDismiss,
+    this.contactName,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -93,24 +108,33 @@ class ReconnectionScreen extends StatelessWidget {
     );
   }
 
+  /// Every branch keeps the contact's name out of subject-verb agreement.
+  /// Two saved contacts render as "Omar and Layla", so "$name was notified"
+  /// would be broken English in the one message a traveller reads after
+  /// finding out somebody was woken on their behalf — "we notified $name"
+  /// and "$name never heard from us" survive both.
   String _summary(Trip? t) {
     final notes = t?.notifications ?? const [];
+    final name = contactName;
     if (notes.contains('tier2')) {
-      return "Trip completed. Your contact and the emergency centre were "
-          "notified before you reconnected — worth letting them know "
-          "you're safe.";
+      return "Trip completed. "
+          "${name != null ? 'We notified $name and the emergency centre' : 'Your contact and the emergency centre were notified'} "
+          "before you reconnected — worth letting them know you're safe.";
     }
     if (notes.contains('tier1')) {
-      return "Trip completed. Your contact was notified before you "
-          "reconnected — worth letting them know you're safe.";
+      return "Trip completed. "
+          "${name != null ? 'We notified $name' : 'Your contact was notified'} "
+          "before you reconnected — worth letting them know you're safe.";
     }
     if (notes.contains('tier0')) {
       // Tier 0 fired and was answered, or the traveller reconnected during
       // it. Worth saying explicitly: the window was too tight, and the
       // system came to them rather than to anyone else.
       return "Trip completed. You ran past the expected time, so we checked "
-          "with you directly — nobody else was contacted.";
+          "with you directly — "
+          "${name != null ? '$name heard nothing' : 'nobody else was contacted'}.";
     }
-    return 'Trip completed safely. Your contact was never notified.';
+    return "Trip completed safely. "
+        "${name != null ? '$name never heard from us' : 'Your contact was never notified'}.";
   }
 }

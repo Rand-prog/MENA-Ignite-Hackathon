@@ -59,6 +59,17 @@ class LocationService {
     return always.isGranted || whileInUse.isGranted;
   }
 
+  /// Open this app's page in the OS settings.
+  ///
+  /// The only way out of a permanently-denied location permission. Once the
+  /// OS has marked it that way, [requestPermission] returns false
+  /// immediately without ever showing a prompt — so onboarding's "Allow"
+  /// button visibly does nothing on every press, and because that step
+  /// gates the rest of the flow, setup could not be completed at all. The
+  /// screen needs this escape hatch; wrapping permission_handler here keeps
+  /// that import in the one file that already owns it.
+  Future<bool> openSettings() => openAppSettings();
+
   static LocationSettings _settingsFor(GpsMode mode) {
     switch (mode) {
       case GpsMode.idle:

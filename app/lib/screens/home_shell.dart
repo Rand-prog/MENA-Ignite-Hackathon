@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../models/contact.dart';
 import '../models/trip.dart';
 import '../models/zone.dart';
 import '../services/api_client.dart';
@@ -51,6 +52,12 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   bool _online = true;
   bool _showReconnection = false;
   Position? _position;
+
+  /// The emergency contact's own name, for the screens that talk about
+  /// them. See [_displayContactName]. Resolved once here rather than read
+  /// per build: StorageService.contacts re-decodes JSON on every access,
+  /// and the value cannot change without going back through onboarding.
+  String? _contactName;
 
   // Drives the on-screen countdowns ("38 min until we text Omar") between
   // polls, without rebuilding anything else. This used to be a
@@ -109,11 +116,27 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   /// stopped entirely when the app isn't foregrounded.
   static const _pollFast = Duration(seconds: 5);
   static const _pollIdle = Duration(seconds: 45);
+  // Idle, but with somebody actually looking at the screen.
+  //
+  // The 45-second idle cadence above is justified by battery: a poll costs
+  // a radio wake-up, and idle is nearly all of the time. But polling is
+  // already stopped outright while the app is backgrounded, so the only
+  // time _pollIdle is ever in force is when the app is open in front of a
+  // person -- and there the battery argument is close to worthless while
+  // the latency is not. A trip that opens is up to 45 seconds late to the
+  // one screen the traveller has deliberately opened to look at, and the
+  // BUFFER state it passes through lasts about three seconds, so the
+  // approach card was effectively unreachable.
+  static const _pollForeground = Duration(seconds: 4);
   Duration _currentPollInterval = _pollFast;
+  // Starts true: this widget is only built once the app is on screen, and
+  // didChangeAppLifecycleState does not fire for the state the app is
+  // already in.
+  bool _foregrounded = true;
 
   Duration get _wantedPollInterval {
     final t = _trip;
-    if (t == null) return _pollIdle;
+    if (t == null) return _foregrounded ? _pollForeground : _pollIdle;
     // A Tier 0 ping has a 90-second fuse; missing it because the app was
     // on a 45-second cadence would waste the entire point of the rung.
     if (t.isTier0) return const Duration(seconds: 3);
@@ -127,6 +150,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _api = ApiClient(widget.storage);
     _zone = widget.storage.zone;
+    _contactName = _displayContactName(widget.storage.contacts);
 
     widget.location.startTracking();
     _posSub = widget.location.positions.listen((p) {
@@ -184,10 +208,12 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     // regardless, so there is nothing to lose by stopping and catching up
     // on resume.
     if (state == AppLifecycleState.resumed) {
+      _foregrounded = true;
       _poll();
       _restartPolling(_wantedPollInterval);
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
+      _foregrounded = false;
       _pollTimer?.cancel();
       _pollTimer = null;
     }
@@ -337,6 +363,35 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     await _poll();
   }
 
+  /// "Omar", "Omar and Layla", or null when nothing usable was saved.
+  ///
+  /// The app has known this since onboarding and never once said it: every
+  /// sentence in the UI read "your contact" about a person the traveller
+  /// picked out by name, while trip.dart's own comment states the intended
+  /// sentence — "we'd text Omar in 42 minutes."
+  ///
+  /// Two names read as a plural subject, which is why the copy in every
+  /// screen that takes this keeps it out of subject-verb agreement.
+  ///
+  /// Truncated, because the contacts step is a free-text field with no
+  /// length limit and this name is dropped mid-sentence into single lines
+  /// on a 375px screen — every site wraps, but nothing wraps a pasted
+  /// hundred-character run with no spaces in it.
+  static String? _displayContactName(List<EmergencyContact> contacts) {
+    String clip(String s) => s.length <= 24 ? s : '${s.substring(0, 23)}…';
+
+    final names = contacts
+        .map((c) => c.name.trim())
+        .where((n) => n.isNotEmpty)
+        .map(clip)
+        .toList();
+    if (names.isEmpty) return null;
+    // Onboarding caps the list at two (_addContactField), so there is no
+    // third case to fold in here.
+    if (names.length == 1) return names.first;
+    return '${names[0]} and ${names[1]}';
+  }
+
   void _cycleTheme() {
     const order = [ThemeMode.dark, ThemeMode.light, ThemeMode.system];
     final next = order[(order.indexOf(widget.themeMode) + 1) % order.length];
@@ -353,11 +408,18 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
         position: _position,
         trip: _trip,
         tick: _tick,
+        // The theme control has to come with this screen. Once the radio is
+        // dark this is the whole app, and app_theme.dart names it as the
+        // screen a near-black palette hurts most at midday.
+        themeMode: widget.themeMode,
+        onCycleTheme: _cycleTheme,
+        contactName: _contactName,
       );
       key = 'offline';
     } else if (_showReconnection) {
       body = ReconnectionScreen(
         trip: _reconnectionTrip,
+        contactName: _contactName,
         // Persist until acknowledged rather than auto-dismissing after
         // four seconds. A traveller who has just come back into signal is
         // usually still driving and looking at the road; a confirmation
@@ -376,6 +438,10 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
         onDeclareStop: _declareStop,
         onAnswerTier0: _answerTier0,
         tick: _tick,
+        // What the idle card needs to show evidence the install is armed
+        // rather than just a shield and a reassuring sentence.
+        zone: _zone,
+        contactName: _contactName,
       );
       key = _trip?.isTier0 == true ? 'tier0' : 'approach';
     }

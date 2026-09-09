@@ -188,13 +188,25 @@ void main() {
       handle.dispose();
     });
 
-    testWidgets('the preparing card no longer claims to be downloading',
+    // This test used to assert the opposite -- that the card carried no
+    // progress bar and never said "downloading" -- because the bar had
+    // been removed as dishonest: the corridor tiles ship inside the APK,
+    // so nothing was ever being fetched.
+    //
+    // The bar is back by an explicit product decision, for demo use, and
+    // what this test now pins is the compromise that made it defensible:
+    // the card shows preparation progress, but the word "downloading" is
+    // still not allowed anywhere in it, because that specific claim is
+    // the one that is false.
+    testWidgets('the preparing card shows progress without claiming a download',
         (tester) async {
       await tester.pumpWidget(_host(ApproachScreen(trip: _trip(state: 'BUFFER'))));
       await tester.pump();
 
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      expect(find.textContaining('offline map'), findsWidgets);
       expect(find.textContaining('downloading'), findsNothing);
-      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(find.textContaining('Downloading'), findsNothing);
     });
   });
 

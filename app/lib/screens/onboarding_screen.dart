@@ -48,6 +48,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   bool _networkAuthorised = false;
   bool _requestingLocation = false;
 
+  /// Set once a permission request has come back refused.
+  ///
+  /// Step 2's primary button was the only action on the step and it only
+  /// advanced on a grant — so once the OS marks location permanently denied
+  /// (it stops showing the prompt at all and the request returns false
+  /// immediately), the button visibly did nothing on every press and steps
+  /// 3-5, registration included, became unreachable. Setup could not be
+  /// completed at all, with no way out but reinstalling. This flag is what
+  /// puts the settings route on screen.
+  bool _locationDenied = false;
+
   // Fixed, matching scripts/run_demo.py's Config.msisdn default — the
   // conductor resets the whole travellers table at the start of every
   // scenario (Conductor.arm() -> backend.reset()), so this number is free
@@ -85,6 +96,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final granted = await widget.location.requestPermission();
     setState(() {
       _locationGranted = granted;
+      _locationDenied = !granted;
       _requestingLocation = false;
     });
     if (granted) _goTo(2);
@@ -350,10 +362,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       stepIndex: 1,
       stepCount: _stepCount,
       title: 'Background location',
-      subtitle:
-          'Used only inside a monitored dead zone, to show your position '
-          'on the offline map and as a local backup if the network signal '
-          'is delayed. Detection itself runs on the network, not your GPS.',
+      // The denied copy is written as a condition, not an assertion: the
+      // request returning false covers both an ordinary decline (where the
+      // prompt did appear) and a permanently-denied permission (where it
+      // never will again), and this screen cannot tell those apart. So it
+      // describes the symptom the traveller can check for themselves and
+      // gives them the route out either way.
+      subtitle: _locationDenied && !_locationGranted
+          ? 'Location is still off. The system only offers that prompt once '
+              'or twice — if pressing Allow does nothing now, it has stopped '
+              'asking. Turn Location on for SignalGuard in device settings, '
+              'then come back and check again.'
+          : 'Used only inside a monitored dead zone, to show your position '
+              'on the offline map and as a local backup if the network signal '
+              'is delayed. Detection itself runs on the network, not your GPS.',
       // Center, not a bare Column — StepScaffold's outer Column is
       // left-aligned (for the title/subtitle text), and a plain Column
       // shrink-wraps to its widest child under that alignment rather than
@@ -371,11 +393,27 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               : AppPalette.of(context).textMuted,
         ),
       ),
+      // "Check again" rather than "Allow all the time" once refused: after
+      // a trip to the settings page, re-requesting is exactly what the
+      // traveller wants this button to do — it returns granted immediately
+      // and the flow moves on — but labelling it "Allow" makes it look
+      // like the same dead press that got them here.
       primaryLabel: _locationGranted
           ? 'Continue'
-          : (_requestingLocation ? 'Requesting…' : 'Allow all the time'),
+          : (_requestingLocation
+              ? 'Requesting…'
+              : (_locationDenied ? 'Check again' : 'Allow all the time')),
       onPrimary: _locationGranted ? () => _goTo(2) : _requestLocation,
       primaryEnabled: !_requestingLocation,
+      // No "continue without location" here on purpose — that would change
+      // what this app is allowed to do, not just how setup flows. The
+      // settings page is the way out.
+      secondary: _locationDenied && !_locationGranted
+          ? TextButton(
+              onPressed: widget.location.openSettings,
+              child: const Text('Open device settings'),
+            )
+          : null,
       onBack: _requestingLocation ? null : () => _goTo(0),
     );
   }

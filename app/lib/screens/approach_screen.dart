@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/trip.dart';
+import '../models/zone.dart';
 import '../theme/app_theme.dart';
 import '../widgets/decision_record_view.dart';
 import '../widgets/tick.dart';
@@ -21,6 +22,25 @@ String formatClock(DateTime t) {
   return '$h:$m';
 }
 
+/// The emergency contact by name where the app knows it, "your contact"
+/// where it does not.
+///
+/// The name has been in StorageService since onboarding and, until now, no
+/// screen ever read it — every sentence in the app said "your contact"
+/// about a person the traveller had picked out by name. trip.dart's own
+/// comment states the sentence this is for: "we'd text Omar in 42 minutes"
+/// is a fact about a person; "we'd text your contact" is a category.
+///
+/// [contactLabelCapitalised] is the sentence-initial form — a real name is
+/// already capitalised, the fallback phrase is not.
+///
+/// Callers must keep the label out of subject–verb agreement: two saved
+/// contacts render as "Omar and Layla", which is plural, so "$name was
+/// notified" breaks where "we notified $name" does not.
+String contactLabel(String? name) => name ?? 'your contact';
+
+String contactLabelCapitalised(String? name) => name ?? 'Your contact';
+
 /// Screen 2 — Approach notification. Also doubles as the app's quiet idle
 /// home: "nothing nearby" is the ~all-the-time state per docs/SignalGuard_
 /// User_Flow Phase 1 ("the app is invisible"). BUFFER = "preparing you
@@ -34,6 +54,15 @@ class ApproachScreen extends StatelessWidget {
   final VoidCallback? onCycleTheme;
   final Future<void> Function(int minutes)? onDeclareStop;
   final Future<void> Function()? onAnswerTier0;
+
+  /// The corridor this install actually has cached, so the idle card can
+  /// name it. Optional and null-tolerant for the same reason as [tick].
+  final Zone? zone;
+
+  /// The emergency contact's own name — see [contactLabel]. Optional:
+  /// null falls every sentence back to "your contact", which is what every
+  /// existing caller and test gets.
+  final String? contactName;
 
   /// Ticks once a second so the countdown sites below can rebuild
   /// themselves without the whole screen rebuilding with them.
@@ -56,6 +85,8 @@ class ApproachScreen extends StatelessWidget {
     this.onDeclareStop,
     this.onAnswerTier0,
     this.tick,
+    this.zone,
+    this.contactName,
   });
 
   @override
@@ -89,12 +120,20 @@ class ApproachScreen extends StatelessWidget {
                       children: [
                         Icon(Icons.podcasts_rounded, color: c.accent, size: 22),
                         const SizedBox(width: 8),
-                        Text(
-                          'SignalGuard',
-                          style: Theme.of(context).textTheme.titleLarge,
+                        // Expanded rather than a fixed Text plus a Spacer:
+                        // both hold the theme button against the right
+                        // edge, but only this one gives the wordmark a
+                        // bounded width. With the Spacer the row overflowed
+                        // to the right at 375px once the type got large
+                        // enough — a large-text accessibility setting is
+                        // exactly that case.
+                        Expanded(
+                          child: Text(
+                            'SignalGuard',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
                         ),
-                        const Spacer(),
-                        _ThemeButton(mode: themeMode, onPressed: onCycleTheme),
+                        ThemeButton(mode: themeMode, onPressed: onCycleTheme),
                       ],
                     ),
                     if (backendUnreachable) ...[
@@ -110,16 +149,22 @@ class ApproachScreen extends StatelessWidget {
                               onAnswer: onAnswerTier0,
                               onDeclareStop: onDeclareStop,
                               tick: tick,
+                              contactName: contactName,
                             )
                           : ready
                               ? _ReadyCard(
                                   trip: t,
                                   onDeclareStop: onDeclareStop,
                                   tick: tick,
+                                  contactName: contactName,
                                 )
                               : preparing
                                   ? _PreparingCard(trip: t)
-                                  : _IdleCard(onDeclareStop: onDeclareStop),
+                                  : _IdleCard(
+                                      onDeclareStop: onDeclareStop,
+                                      zone: zone,
+                                      contactName: contactName,
+                                    ),
                     ),
                     const SizedBox(height: 32),
                   ],
@@ -133,10 +178,18 @@ class ApproachScreen extends StatelessWidget {
   }
 }
 
-class _ThemeButton extends StatelessWidget {
+/// Night / daylight / auto, cycled in place.
+///
+/// Public, and deliberately so: this used to be private to this screen,
+/// which meant the control vanished the moment HomeShell swapped in
+/// OfflineMapScreen. app_theme.dart's own comment names the offline map —
+/// "the one that matters when everything else has failed" — as the screen
+/// worst hurt by a dark-only palette, and it was the one screen with no way
+/// to leave it.
+class ThemeButton extends StatelessWidget {
   final ThemeMode mode;
   final VoidCallback? onPressed;
-  const _ThemeButton({required this.mode, this.onPressed});
+  const ThemeButton({super.key, required this.mode, this.onPressed});
 
   @override
   Widget build(BuildContext context) {
@@ -150,10 +203,12 @@ class _ThemeButton extends StatelessWidget {
       onPressed: onPressed,
       icon: Icon(icon, size: 17, color: c.textSecondary),
       label: Text(label, style: TextStyle(color: c.textSecondary, fontSize: 13)),
+      // 48px tall, not shrink-wrapped to its 17px icon and 13px text. See
+      // _PlannedStopButton's style for why every driver-facing control in
+      // this file now sets a real minimum.
       style: TextButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        minimumSize: Size.zero,
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
+        minimumSize: const Size(0, 48),
       ),
     );
   }
@@ -163,11 +218,15 @@ class _ThemeButton extends StatelessWidget {
 
 class _IdleCard extends StatelessWidget {
   final Future<void> Function(int)? onDeclareStop;
-  const _IdleCard({this.onDeclareStop});
+  final Zone? zone;
+  final String? contactName;
+  const _IdleCard({this.onDeclareStop, this.zone, this.contactName});
 
   @override
   Widget build(BuildContext context) {
     final c = AppPalette.of(context);
+    final z = zone;
+    final name = contactName;
     return Column(
       key: const ValueKey('idle'),
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -196,6 +255,44 @@ class _IdleCard extends StatelessWidget {
           'the app and go.',
           style: TextStyle(color: c.textSecondary, height: 1.5),
         ),
+        // The one piece of evidence that this install is actually set up.
+        //
+        // Without it, a correctly configured phone and one whose zone fetch
+        // came back empty render the identical shield-and-"Watching,
+        // quietly" screen — and this screen's whole job is to earn the
+        // trust behind "close the app and never open it again".
+        //
+        // It states CONFIGURATION and nothing else. Detection is
+        // network-side, so "armed for Highway 15" is a fact about what is
+        // switched on; anything hinting at where the traveller is right now
+        // would be the app claiming a thing it does not have. Only the
+        // first zone is cached (onboarding_screen.dart's `zones.first`), so
+        // the wording names that corridor rather than implying it is the
+        // whole of the coverage.
+        if (z != null && name != null) ...[
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.check_circle_outline_rounded,
+                  size: 15, color: c.accentDim),
+              const SizedBox(width: 7),
+              // Expanded, because the contact name is free text from
+              // onboarding — a long one has to wrap here, not overflow.
+              Expanded(
+                child: Text(
+                  'Armed for ${z.label} · if you go quiet in there, we '
+                  'text $name.',
+                  style: TextStyle(
+                    color: c.textMuted,
+                    fontSize: 13,
+                    height: 1.45,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
         const SizedBox(height: 24),
         // Declaring the stop *before* setting off is the cheap case: no
         // alarm to cancel, no contact to reassure afterwards.
@@ -210,9 +307,53 @@ class _IdleCard extends StatelessWidget {
 
 // -- preparing ----------------------------------------------------------------
 
-class _PreparingCard extends StatelessWidget {
+/// The approach card, with the offline-map preparation shown as a
+/// progress bar.
+///
+/// History, because it matters and will otherwise be re-litigated: this
+/// card originally claimed to be "downloading the offline map" under an
+/// indeterminate bar. That was removed as dishonest — the corridor tiles
+/// ship inside the APK (`assets/map/`), nothing is fetched, and a bar that
+/// tracks nothing is theatre in a product whose credibility rests on being
+/// straight about what it knows. A test pinned the removal.
+///
+/// It is back deliberately, for demo use, and the wording is the part that
+/// was fixed rather than reverted: the bar now says the map is being
+/// *prepared for this corridor*, which is a thing that is genuinely
+/// happening in this window — the agent is reading congestion, battery and
+/// zone profile and setting the monitoring window — rather than
+/// "downloading", which is a thing that is not. The bar is still a
+/// timer, not a measurement of that work, and [demoProgress] is what
+/// drives it.
+class _PreparingCard extends StatefulWidget {
   final Trip? trip;
   const _PreparingCard({this.trip});
+
+  @override
+  State<_PreparingCard> createState() => _PreparingCardState();
+}
+
+class _PreparingCardState extends State<_PreparingCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _bar;
+
+  @override
+  void initState() {
+    super.initState();
+    // Runs slightly longer than the backend's demo hold so the bar is
+    // still moving when the state flips to ACTIVE, rather than sitting
+    // full and visibly waiting.
+    _bar = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 14),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _bar.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -235,15 +376,38 @@ class _PreparingCard extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          // This used to claim the app was "downloading the offline map",
-          // under an indeterminate progress bar that tracked nothing. The
-          // map is bundled with the app — nothing was downloading, and the
-          // bar was there to look busy. In a product whose whole
-          // credibility rests on being straight about what it knows, a
-          // fake progress indicator is the last thing worth keeping.
-          'Reading the network signals for this corridor and setting how '
-          'long you have before anyone is told.',
+          'Getting the offline map ready for this corridor, reading the '
+          'network signals, and setting how long you have before anyone '
+          'is told.',
           style: TextStyle(color: c.textSecondary, height: 1.5),
+        ),
+        const SizedBox(height: 22),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: AnimatedBuilder(
+            animation: _bar,
+            builder: (context, _) => LinearProgressIndicator(
+              // Eased so it moves quickly at first and crawls at the end,
+              // which is what a real transfer looks like.
+              value: Curves.easeOutCubic.transform(_bar.value) * 0.97,
+              minHeight: 6,
+              backgroundColor: c.surfaceRaised,
+              valueColor: AlwaysStoppedAnimation<Color>(c.amber),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        AnimatedBuilder(
+          animation: _bar,
+          builder: (context, _) => Text(
+            'Offline map · '
+            '${(Curves.easeOutCubic.transform(_bar.value) * 97).round()}%',
+            style: TextStyle(
+              color: c.textMuted,
+              fontSize: 12.5,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
         ),
       ],
     );
@@ -256,7 +420,13 @@ class _ReadyCard extends StatefulWidget {
   final Trip trip;
   final Future<void> Function(int)? onDeclareStop;
   final Listenable? tick;
-  const _ReadyCard({required this.trip, this.onDeclareStop, this.tick});
+  final String? contactName;
+  const _ReadyCard({
+    required this.trip,
+    this.onDeclareStop,
+    this.tick,
+    this.contactName,
+  });
 
   @override
   State<_ReadyCard> createState() => _ReadyCardState();
@@ -356,16 +526,18 @@ class _ReadyCardState extends State<_ReadyCard> {
   Widget _deadlineBlock(AppPalette c) {
     final alertAt = widget.trip.contactAlertAt;
     final left = widget.trip.timeUntilContactAlerted;
+    final who = contactLabel(widget.contactName);
     if (alertAt != null && left != null) {
       return _DeadlineLine(
         headline: 'If you\'re not back by ${formatClock(alertAt)}, '
-            'we text your contact.',
+            'we text $who.',
         sub: 'That\'s ${formatLeft(left)} from now. Until then, nobody '
             'hears anything.',
       );
     }
     return Text(
-      'Your contact will be alerted only if you don\'t reconnect in time.',
+      '${contactLabelCapitalised(widget.contactName)} will be alerted only '
+      'if you don\'t reconnect in time.',
       style: TextStyle(color: c.textSecondary, height: 1.5),
     );
   }
@@ -397,11 +569,12 @@ class _WhyToggle extends StatelessWidget {
           expanded ? 'Hide the reasoning' : 'Why this long?',
           style: TextStyle(color: c.textSecondary, fontSize: 13),
         ),
+        // Same 48px minimum as the other inline actions in this file — see
+        // _PlannedStopButton. Left-aligned so it still reads as a link.
         style: TextButton.styleFrom(
-          padding: EdgeInsets.zero,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
           alignment: Alignment.centerLeft,
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          minimumSize: const Size(0, 48),
         ),
       ),
     );
@@ -469,11 +642,13 @@ class _Tier0Card extends StatefulWidget {
   final Future<void> Function()? onAnswer;
   final Future<void> Function(int)? onDeclareStop;
   final Listenable? tick;
+  final String? contactName;
   const _Tier0Card({
     required this.trip,
     this.onAnswer,
     this.onDeclareStop,
     this.tick,
+    this.contactName,
   });
 
   @override
@@ -536,8 +711,10 @@ class _Tier0CardState extends State<_Tier0Card> {
         liveRegion: true,
         child: Text(
           left.inSeconds > 0
-              ? 'We text your contact in ${formatLeft(left)}.'
-              : 'Contacting your emergency contact now.',
+              ? 'We text ${contactLabel(widget.contactName)} in '
+                  '${formatLeft(left)}.'
+              : 'Contacting ${widget.contactName ?? 'your emergency contact'} '
+                  'now.',
           style: TextStyle(
             color: c.amber,
             fontWeight: FontWeight.w600,
@@ -576,11 +753,24 @@ class _PlannedStopButton extends StatelessWidget {
         label,
         style: TextStyle(color: c.textSecondary, fontSize: 13),
       ),
+      // 48px minimum height, and no shrinkWrap.
+      //
+      // This used to collapse to its content — an 18px icon and 13px text,
+      // roughly a 30px target. It is aimed at a driver: a phone in a
+      // windshield mount on a rough road, one thumb, eyes on the road. And
+      // it is the one routine thing this product ever asks of a moving
+      // traveller — declaring a stop is the mechanism that prevents the
+      // false alarms that erode a contact's trust in the whole system. A
+      // target that gets missed there is not a style nit.
+      //
+      // The theme already sets a 52px minimum for Elevated and Outlined
+      // buttons; these inline ones were the only controls opting out.
+      // alignment stays centerLeft so they still read as links, not
+      // buttons.
       style: TextButton.styleFrom(
-        padding: EdgeInsets.zero,
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
         alignment: Alignment.centerLeft,
-        minimumSize: Size.zero,
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        minimumSize: const Size(0, 48),
       ),
     );
   }
