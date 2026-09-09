@@ -47,6 +47,17 @@ const state = {
   seen: new Map(),
   awayChanges: [],
   focusedIndex: -1,
+  // trip_id -> {elapsedMin, at}. The backend's elapsed_min is three
+  // seconds stale by the time the next poll lands, which is fine for a
+  // number nobody watches and wrong for one that counts up in front of
+  // the dispatcher. Rows interpolate from this base every second and are
+  // corrected on each poll. See tripElapsed().
+  clocks: new Map(),
+  // The queue's true order, held back while the pointer is in the list.
+  // See listIsHot() / renderList().
+  pendingOrder: null,
+  pendingUrgent: false,
+  pendingHeld: 0,
 };
 
 // -- DOM helpers -------------------------------------------------------------
@@ -62,6 +73,101 @@ function el(tag, className, text) {
 
 function setText(node, value) {
   if (node) node.textContent = value === null || value === undefined ? "—" : String(value);
+}
+
+// -- formatting --------------------------------------------------------------
+
+/** A duration in minutes, said the way a person would say it.
+ *
+ *  This dashboard used to print raw minutes everywhere: "1015 min elapsed
+ *  / 105 min window". Past about ninety minutes that stops being a
+ *  quantity anyone reads and becomes one they convert, which is the wrong
+ *  thing to ask of someone deciding whether to dispatch. The Flutter app
+ *  already spoke in hours and minutes (see app/lib/screens/
+ *  approach_screen.dart's formatLeft) — same product, so the same words. */
+function formatMins(mins) {
+  if (mins === null || mins === undefined || Number.isNaN(Number(mins))) return "—";
+  const total = Math.round(Number(mins));
+  if (total < 1) return "under a minute";
+  if (total < 60) return `${total} min`;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+/** A wall-clock time, in the words the app already uses for it (see
+ *  formatClock in app/lib/screens/approach_screen.dart). 24-hour and
+ *  zero-padded: an emergency centre reads times back over a radio, and
+ *  "3:40" is a question there in a way "15:40" is not. */
+function formatClock(date) {
+  return (
+    String(date.getHours()).padStart(2, "0") +
+    ":" +
+    String(date.getMinutes()).padStart(2, "0")
+  );
+}
+
+/** The moment a contact would be texted, and how far off it is.
+ *
+ *  Derived from (window_deadline − server_now) added to *this* machine's
+ *  clock, never from window_deadline directly. The demo runs on a virtual
+ *  clock that can sit hours from wall time, and printing the raw deadline
+ *  would put a nonsense hour in front of a dispatcher who has no way of
+ *  telling it is nonsense. Both timestamps arrive naive — no trailing Z —
+ *  so they are parsed the same way and only ever subtracted from each
+ *  other; converting either side to UTC would shift the delta by this
+ *  browser's offset and quietly break the one number this is for. The app
+ *  makes the identical move for the identical reason: see
+ *  Trip.contactAlertAt in app/lib/models/trip.dart.
+ *
+ *  Null when the payload is missing either side, or when the moment has
+ *  already gone by — a deadline in the past is not a time anything is
+ *  still going to happen at, and this system does not guess. */
+function contactAlertDue(trip) {
+  if (!trip.window_deadline || !trip.server_now) return null;
+  const left = new Date(trip.window_deadline) - new Date(trip.server_now);
+  if (!Number.isFinite(left) || left <= 0) return null;
+  return { clock: formatClock(new Date(Date.now() + left)), mins: left / 60000 };
+}
+
+/** How far past the monitoring window a trip is, in minutes, or null. */
+function overdueMin(trip, elapsed) {
+  const e = elapsed === undefined ? trip.elapsed_min : elapsed;
+  if (e == null || !trip.monitoring_window_min) return null;
+  const over = e - trip.monitoring_window_min;
+  return over > 0 ? over : null;
+}
+
+/** Trim a backend "lat, lon" pair to something a person can read aloud.
+ *
+ *  The backend hands these over at full float precision — 14 decimal
+ *  places, or roughly a nanometre, for a position derived from a cell
+ *  geofence with an eight-kilometre radius. Five places is about a metre,
+ *  which is already more than the signal supports and is short enough to
+ *  read. Anything that isn't a coordinate pair passes through untouched. */
+function formatCoords(value) {
+  if (!value) return null;
+  const m = String(value).match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!m) return String(value);
+  return `${Number(m[1]).toFixed(5)}, ${Number(m[2]).toFixed(5)}`;
+}
+
+/** Stable perpendicular lane for a trip's marker and cone, 0-indexed from
+ *  the corridor centreline.
+ *
+ *  Convoy trips sit on the same line and merge into one indistinguishable
+ *  bar, so they are fanned out. The offset used to be the trip's index in
+ *  the poll response — which meant every remaining marker hopped to a new
+ *  lane the moment any trip closed and the array shifted under it. On a
+ *  map whose whole caveat is "this is an estimate, not a live feed",
+ *  inventing sideways movement is the one artefact it cannot afford. A
+ *  hash of the trip id never moves. */
+function laneFor(tripId) {
+  let h = 0;
+  for (let i = 0; i < tripId.length; i++) {
+    h = (Math.imul(h, 31) + tripId.charCodeAt(i)) >>> 0;
+  }
+  return (h % 5) - 2;
 }
 
 // -- Web Mercator projection — must match app/tool/fetch_corridor_map.py
@@ -191,6 +297,10 @@ const ui = {
   changeBanner: el_("change-banner"),
   changeBannerBody: el_("change-banner-body"),
   changeBannerDismiss: el_("change-banner-dismiss"),
+  orderPending: el_("order-pending"),
+  mapPanel: document.querySelector(".map-panel"),
+  mapToggle: el_("map-toggle"),
+  mapCollapse: el_("map-collapse"),
   shortcutHint: el_("shortcut-hint"),
   shortcutToggle: el_("shortcut-toggle"),
   detailHandoff: el_("detail-handoff"),
@@ -199,8 +309,13 @@ const ui = {
   detailStatus: el_("detail-status"),
   detailName: el_("detail-name"),
   detailMsisdn: el_("detail-msisdn"),
+  detailGone: el_("detail-gone"),
   detailEntry: el_("detail-entry"),
+  detailEntryLabel: el_("detail-entry-label"),
   detailLastKnown: el_("detail-lastknown"),
+  detailLastKnownRow: el_("detail-lastknown-row"),
+  detailRecordBlock: el_("detail-record-block"),
+  detailRecordLead: el_("detail-record-lead"),
   detailPredicted: el_("detail-predicted"),
   detailPosition: el_("detail-position"),
   detailBattery: el_("detail-battery"),
@@ -245,14 +360,54 @@ async function api(path, opts) {
 
 let audioCtx = null;
 
+/** Create the AudioContext and ask the browser to let it run.
+ *
+ *  Browsers hand back a *suspended* context when no user gesture has
+ *  happened yet, and a suspended context's currentTime does not advance —
+ *  so the first escalation of a shift, which is the one nobody is expecting,
+ *  was scheduled into a clock that was not moving and made no sound. The
+ *  only unlock path used to be the mute button, and clicking that from the
+ *  default unmuted state *mutes* alerts, so audio genuinely only ever came
+ *  up if the dispatcher pressed the toggle twice.
+ *
+ *  Any click or keypress anywhere on the page counts as the gesture, and a
+ *  dispatcher console gets one within seconds of being opened. Always
+ *  resolves — the caller must never have to guard against audio failing. */
+function unlockAudio() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "running") return Promise.resolve();
+    return Promise.resolve(audioCtx.resume()).then(renderMuteToggle, (e) => {
+      console.warn("audio could not be unlocked", e);
+      renderMuteToggle();
+    });
+  } catch (e) {
+    console.warn("alert tone unavailable", e);
+    return Promise.resolve();
+  }
+}
+
+// Both, because a keyboard-driven dispatcher may never generate a pointer
+// event and vice versa. unlockAudio() is idempotent, so whichever fires
+// second is a no-op.
+document.addEventListener("pointerdown", unlockAudio, { once: true });
+document.addEventListener("keydown", unlockAudio, { once: true });
+
 /** Two-tone alert, synthesised rather than shipped as an audio file so the
  *  dashboard keeps its no-assets, no-build-step property. */
 function playAlert() {
   if (state.alertsMuted) return;
   try {
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    // Browsers suspend an AudioContext created before any user gesture.
-    if (audioCtx.state === "suspended") audioCtx.resume();
+    unlockAudio();
+    // Nothing is scheduled onto a context the browser has not allowed to
+    // run. Queueing anyway is worse than silence: every escalation would
+    // stack another pair of oscillators at a currentTime that never moves,
+    // and the moment the dispatcher finally clicked something they would
+    // all fire at once. Say so on the mute button instead.
+    if (!audioCtx || audioCtx.state !== "running") {
+      renderMuteToggle();
+      return;
+    }
     const now = audioCtx.currentTime;
     [880, 660].forEach((freq, i) => {
       const osc = audioCtx.createOscillator();
@@ -276,16 +431,48 @@ function playAlert() {
 let titleFlashTimer = null;
 const BASE_TITLE = document.title;
 
+/** The title to sit at when nothing is flashing.
+ *
+ *  The flash burst is an arrival signal and it is over in eight seconds.
+ *  The escalation is not: it is still unresolved, still a person in a dead
+ *  zone, and this tab is very often not the front one. Once the burst
+ *  finished, a background tab holding a Tier 2 read exactly like an idle
+ *  one — and the tab strip is the only part of this console a dispatcher
+ *  can see while they are on the phone. */
+function titleFor(n) {
+  return n > 0 ? `(${n}) ⚠ ${BASE_TITLE}` : BASE_TITLE;
+}
+
+/** Red trips as of the last poll. checkForNewEscalations() rewrites
+ *  state.redSeen before anything else, so this is current even mid-burst. */
+function redCount() {
+  return state.redSeen.size;
+}
+
+function applyTitleBadge() {
+  // A running burst owns the title. Without this the two write over each
+  // other every 700ms and the burst — which is the louder signal, and the
+  // one the dispatcher is meant to catch — loses half its frames.
+  if (titleFlashTimer !== null) return;
+  document.title = titleFor(redCount());
+}
+
 function flashTitle(count) {
   clearInterval(titleFlashTimer);
   let on = false;
   let left = 12;
   titleFlashTimer = setInterval(() => {
-    document.title = on ? BASE_TITLE : `⚠ ${count} NEED ACTION`;
+    // The off-beat and the ending are the badge, never BASE_TITLE. A poll
+    // landing mid-burst updates the count but cannot repaint the title, so
+    // if this restored the plain title the badge would be lost until the
+    // *next* trip escalated — which for a queue that never grows again is
+    // forever.
+    document.title = on ? titleFor(redCount()) : `⚠ ${count} NEED ACTION`;
     on = !on;
     if (--left <= 0) {
       clearInterval(titleFlashTimer);
-      document.title = BASE_TITLE;
+      titleFlashTimer = null;
+      document.title = titleFor(redCount());
     }
   }, 700);
 }
@@ -311,6 +498,10 @@ function checkForNewEscalations(trips) {
   const fresh = nowRed.filter((t) => !state.redSeen.has(t.trip_id));
 
   state.redSeen = new Set(nowRed.map((t) => t.trip_id));
+  // Every poll, not just on a transition. A trip resolved from another
+  // console, or one that was already red before this tab was opened, both
+  // have to move the badge — and neither is a "fresh" escalation.
+  applyTitleBadge();
   if (fresh.length === 0) return;
 
   playAlert();
@@ -328,15 +519,36 @@ ui.muteToggle.addEventListener("click", () => {
   state.alertsMuted = !state.alertsMuted;
   localStorage.setItem("sg_alerts_muted", state.alertsMuted ? "1" : "0");
   renderMuteToggle();
-  if (!state.alertsMuted) playAlert(); // confirm it works, and unlock audio
+  // Unmuting plays the tone back so the dispatcher knows it works. The
+  // click itself is a user gesture, which makes it the one reliable moment
+  // to lift a suspended context — but resume() settles asynchronously, so
+  // wait for it rather than sounding into a clock that has not started.
+  if (!state.alertsMuted) {
+    unlockAudio().then(() => {
+      renderMuteToggle();
+      playAlert();
+    });
+  }
 });
 
 function renderMuteToggle() {
-  ui.muteToggle.textContent = state.alertsMuted ? "🔇 Alerts off" : "🔔 Alerts on";
+  // Three states, not two. A browser that has created the context but not
+  // allowed it to run produces exact silence, and this button used to read
+  // "🔔 Alerts on" the whole time it did — the worst possible label, since
+  // it tells a dispatcher they will be told and they will not be.
+  const blocked =
+    !state.alertsMuted && audioCtx !== null && audioCtx.state !== "running";
+  ui.muteToggle.textContent = state.alertsMuted
+    ? "🔇 Alerts off"
+    : blocked
+      ? "🔕 Alerts blocked"
+      : "🔔 Alerts on";
   ui.muteToggle.setAttribute("aria-pressed", state.alertsMuted ? "true" : "false");
   ui.muteToggle.title = state.alertsMuted
     ? "Escalation tone is off — click to enable"
-    : "Escalation tone is on — click to mute";
+    : blocked
+      ? "This browser has not allowed sound on the page yet, so the escalation tone would be silent. Click here to enable it."
+      : "Escalation tone is on — click to mute";
 }
 
 // -- map rendering -----------------------------------------------------------
@@ -437,7 +649,7 @@ function renderTripMarkers() {
     state.view === "live" && activeZoneHasMap() ? inActiveZone(state.trips) : [];
   const seen = new Set();
 
-  trips.forEach((trip, i) => {
+  trips.forEach((trip) => {
     const zone = zoneFor(trip);
     if (!zone) return;
     seen.add(trip.trip_id);
@@ -465,7 +677,9 @@ function renderTripMarkers() {
     // out perpendicular to the corridor — the offset is presentational and
     // says nothing about position, so it stays small enough to read as
     // "these overlap" rather than as separate routes.
-    const lane = (i % 5) - 2;
+    //
+    // Keyed to the trip id, never to its index in this array: see laneFor().
+    const lane = laneFor(trip.trip_id);
     const laneOffsetPct = lane * 1.6;
 
     if (est) {
@@ -528,40 +742,211 @@ function buildRow(trip) {
   const dot = el("span", "status-dot");
   const main = el("span", "trip-main");
   const name = el("div", "trip-name");
+  const overdue = el("div", "trip-overdue");
   const meta = el("div", "trip-meta");
-  main.append(name, meta);
+  main.append(name, overdue, meta);
   const label = el("span", "trip-state-label");
 
   row.append(dot, main, label);
   row.addEventListener("click", () => openDetail(trip.trip_id));
-  return { row, dot, name, meta, label };
+  return { row, dot, name, overdue, meta, label };
 }
 
-function rowText(trip) {
-  const elapsedStr =
-    trip.elapsed_min != null ? `${Math.round(trip.elapsed_min)} min elapsed` : "—";
-  const windowStr = trip.monitoring_window_min
-    ? ` / ${trip.monitoring_window_min} min window`
-    : "";
-  const stopStr = trip.planned_stop_min
-    ? ` · +${trip.planned_stop_min} min declared stop`
-    : "";
-  return `${elapsedStr}${windowStr}${stopStr} · ${trip.congestion_tier || "—"} traffic`;
+/** Elapsed minutes for a trip, interpolated between polls.
+ *
+ *  The backend's elapsed_min is up to three seconds stale by the time the
+ *  next poll replaces it. That is invisible on a number nobody watches and
+ *  obvious on one that counts up in front of a dispatcher, so rows
+ *  interpolate from the last poll and get corrected by the next. */
+function tripElapsed(trip) {
+  const base = state.clocks.get(trip.trip_id);
+  if (!base) return trip.elapsed_min;
+  return base.elapsedMin + (Date.now() - base.at) / 60000;
 }
 
-function renderList() {
+/** Record the clock base for every trip in a fresh poll response. */
+function syncClocks(trips) {
+  const now = Date.now();
+  const live = new Set();
+  for (const t of trips) {
+    live.add(t.trip_id);
+    if (t.elapsed_min != null) state.clocks.set(t.trip_id, { elapsedMin: t.elapsed_min, at: now });
+  }
+  for (const id of [...state.clocks.keys()]) {
+    if (!live.has(id)) state.clocks.delete(id);
+  }
+}
+
+function rowText(trip, elapsed) {
+  const parts = [];
+  if (elapsed == null) {
+    parts.push("—");
+  } else if (elapsed < 1) {
+    parts.push("just entered");
+  } else {
+    parts.push(
+      formatMins(elapsed) + " elapsed" +
+        (trip.monitoring_window_min
+          ? " of a " + formatMins(trip.monitoring_window_min) + " window"
+          : "")
+    );
+  }
+  if (trip.planned_stop_min) {
+    parts.push("+" + formatMins(trip.planned_stop_min) + " declared stop");
+  }
+  // A trip still in BUFFER has no congestion reading yet. "— traffic" is
+  // not a fact about the road, it is a placeholder leaking into a row a
+  // dispatcher is meant to read at a glance.
+  if (trip.congestion_tier) parts.push(trip.congestion_tier + " traffic");
+  return parts.join(" · ");
+}
+
+/** The headline for a row whose window is running out, or has run out.
+ *
+ *  Overdue-by used to be left as arithmetic for the reader — the row said
+ *  "1015 min elapsed / 105 min window" and the dispatcher did the
+ *  subtraction. This is the answer, and it counts up. */
+function rowOverdueText(trip, elapsed) {
+  const over = overdueMin(trip, elapsed);
+  if (over != null) {
+    return over < 1 ? "Just went overdue" : "Overdue by " + formatMins(over);
+  }
+  if (elapsed != null && trip.monitoring_window_min) {
+    const left = trip.monitoring_window_min - elapsed;
+    if (left > 0) {
+      return left < 1
+        ? "Contacts told in seconds"
+        : formatMins(left) + " before contacts are told";
+    }
+  }
+  return "";
+}
+
+/** Refresh only the numbers that move between polls.
+ *
+ *  Runs once a second. Deliberately touches text nodes and nothing else,
+ *  so it can never reorder or rebuild a row out from under a click. */
+function renderRowClocks() {
+  if (state.view !== "live") return;
+  const byId = new Map(state.trips.map((t) => [t.trip_id, t]));
+  for (const [id, node] of rowNodes) {
+    const trip = byId.get(id);
+    if (!trip) continue;
+    const elapsed = tripElapsed(trip);
+    setText(node.meta, rowText(trip, elapsed));
+    node.overdue.textContent = rowOverdueText(trip, elapsed);
+  }
+}
+
+// -- held reordering ---------------------------------------------------------
+//
+// The queue re-sorts by severity on every poll and moves the DOM nodes to
+// match. That is right when nobody is touching the list and wrong the
+// moment somebody is: a row that slides out from under a cursor between
+// mousedown and mouseup opens a different traveller than the one that was
+// clicked, and the panel it opens has "Mark Resolved" in it. So while the
+// pointer is inside the list, a row holds focus, or the detail panel is
+// open, the new order is computed but not applied — and the fact that it
+// is being held is stated rather than left silently true.
+
+let listPointerInside = false;
+
+function listIsHot() {
+  return (
+    listPointerInside ||
+    ui.tripList.contains(document.activeElement) ||
+    !ui.detailPanel.hidden
+  );
+}
+
+ui.tripList.addEventListener("pointerenter", () => {
+  listPointerInside = true;
+});
+ui.tripList.addEventListener("pointerleave", () => {
+  listPointerInside = false;
+  if (state.pendingOrder) renderList();
+});
+ui.tripList.addEventListener("focusout", () => {
+  // focusout fires before the new focus lands, so re-check on the next tick.
+  window.setTimeout(() => {
+    if (!listIsHot() && state.pendingOrder) renderList();
+  }, 0);
+});
+
+ui.orderPending.addEventListener("click", () => {
+  listPointerInside = false;
+  renderList(true);
+  ui.tripList.scrollTop = 0;
+});
+
+function renderOrderPending() {
+  if (!state.pendingOrder) {
+    ui.orderPending.hidden = true;
+    return;
+  }
+  ui.orderPending.hidden = false;
+  ui.orderPending.classList.toggle("is-urgent", state.pendingUrgent);
+  // A held row is counted in "N monitored" but not yet drawn, so say how
+  // many are waiting rather than leaving the discrepancy to be noticed.
+  const held = state.pendingHeld;
+  const waiting = held
+    ? ` — ${held} new trip${held === 1 ? "" : "s"} waiting`
+    : "";
+  ui.orderPending.textContent = state.pendingUrgent
+    ? "A trip needs action and is not at the top — click to re-sort the queue"
+    : !ui.detailPanel.hidden
+      ? `Queue order held while this trip is open${waiting} — it re-sorts on close`
+      : `Queue order paused while you're in the list${waiting} — click to re-sort`;
+}
+
+// -- group headers -----------------------------------------------------------
+//
+// Severity sorting alone left the escalated trip as row one of an
+// otherwise identical list, which reads as "first" rather than as
+// "different". A header names the group and carries its count.
+
+const GROUP_LABEL = {
+  red: "Needs action",
+  amber: "Window expiring",
+  green: "In transit",
+};
+
+const groupNodes = new Map(); // severity -> {head, count}
+
+function groupHead(sev) {
+  let node = groupNodes.get(sev);
+  if (!node) {
+    const head = el("div", "group-head for-" + sev);
+    const label = el("span", null, GROUP_LABEL[sev]);
+    const count = el("span", "group-count");
+    head.append(label, count);
+    node = { head, count };
+    groupNodes.set(sev, node);
+  }
+  return node;
+}
+
+function renderList(force) {
   const trips =
     state.view === "live" ? inActiveZone(state.trips) : inActiveZone(state.history);
 
   setText(
     ui.tripCount,
     state.view === "live"
-      ? `${trips.length} monitored`
-      : `${trips.length} completed`
+      ? trips.length + " monitored"
+      : trips.length + " completed"
   );
+  // "No trips in the corridor right now" is a statement about the corridor,
+  // and a failing poll is not evidence for it. On a cold load against a
+  // backend that is down, the queue is empty for a reason that has nothing
+  // to do with the road, so the offline copy takes the live copy's place —
+  // silence here has to mean "quiet", never "not listening".
+  const offlineEmpty = state.lastPollOk === false && state.view === "live";
   ui.emptyState.classList.toggle("visible", trips.length === 0);
-  ui.emptyState.querySelector("[data-empty-live]").hidden = state.view !== "live";
+  ui.emptyState.querySelector("[data-empty-live]").hidden =
+    state.view !== "live" || offlineEmpty;
   ui.emptyState.querySelector("[data-empty-history]").hidden = state.view === "live";
+  ui.emptyState.querySelector("[data-empty-offline]").hidden = !offlineEmpty;
 
   const sorted = [...trips].sort((a, b) => {
     if (state.view === "history") {
@@ -572,8 +957,11 @@ function renderList() {
     return (b.elapsed_min || 0) - (a.elapsed_min || 0);
   });
 
+  // Content first. Every row's text, colour and class is brought current on
+  // every poll whether or not its position is allowed to move — holding the
+  // order back must never mean holding the facts back.
   const seen = new Set();
-  sorted.forEach((trip, i) => {
+  for (const trip of sorted) {
     seen.add(trip.trip_id);
     let node = rowNodes.get(trip.trip_id);
     if (!node) {
@@ -581,11 +969,14 @@ function renderList() {
       rowNodes.set(trip.trip_id, node);
     }
     const sev = classify(trip);
-    node.row.className = `trip-row state-${sev}${
-      trip.trip_id === state.selectedTripId ? " selected" : ""
-    }`;
+    node.row.className =
+      "trip-row state-" + sev +
+      (trip.trip_id === state.selectedTripId ? " selected" : "");
+    const elapsed = state.view === "live" ? tripElapsed(trip) : trip.elapsed_min;
     setText(node.name, trip.traveller_name || "Unknown traveller");
-    setText(node.meta, rowText(trip));
+    node.overdue.textContent =
+      state.view === "live" ? rowOverdueText(trip, elapsed) : "";
+    setText(node.meta, rowText(trip, elapsed));
     setText(node.label, stateLabel(trip));
     // Marks rows that moved while the dispatcher was not looking — see
     // markSeen(). Cleared as soon as the banner is dismissed.
@@ -593,12 +984,7 @@ function renderList() {
       "changed-while-away",
       state.awayChanges.some((c) => c.trip_id === trip.trip_id)
     );
-
-    // Move into position only if it isn't already there — reordering a node
-    // that is already correct would still blur it in some browsers.
-    const current = ui.tripList.children[i];
-    if (current !== node.row) ui.tripList.insertBefore(node.row, current || null);
-  });
+  }
 
   for (const [id, node] of rowNodes) {
     if (!seen.has(id)) {
@@ -606,6 +992,81 @@ function renderList() {
       rowNodes.delete(id);
     }
   }
+
+  // The sequence the list should be in: a header per non-empty severity
+  // group, then that group's rows. History is one flat, time-ordered list —
+  // "Needs action" is not something a closed trip can be.
+  const wanted = [];
+  if (state.view === "live") {
+    for (const sev of ["red", "amber", "green"]) {
+      const group = sorted.filter((t) => classify(t) === sev);
+      if (group.length === 0) continue;
+      const head = groupHead(sev);
+      setText(head.count, "(" + group.length + ")");
+      wanted.push(head.head);
+      for (const t of group) wanted.push(rowNodes.get(t.trip_id).row);
+    }
+  } else {
+    for (const t of sorted) wanted.push(rowNodes.get(t.trip_id).row);
+  }
+
+  const current = [...ui.tripList.children];
+  const same =
+    current.length === wanted.length && current.every((n, i) => n === wanted[i]);
+
+  // Holding is about not moving rows out from under a pointer. It is never
+  // about keeping a group header that no longer has a group, so an emptied
+  // queue applies immediately and headers whose group is gone are dropped
+  // even while the rest of the order waits.
+  if (!same && !force && listIsHot() && current.length > 0 && sorted.length > 0) {
+    for (const node of current) {
+      if (node.classList.contains("group-head") && !wanted.includes(node)) {
+        node.remove();
+      }
+    }
+    state.pendingOrder = wanted;
+    state.pendingHeld = wanted.filter(
+      (n) => n.classList.contains("trip-row") && !current.includes(n)
+    ).length;
+    // Urgent means "a trip needs action and the queue in front of you does
+    // not show it that way" — either its row is being held out of the list
+    // entirely, or it is sitting below a calmer one. Comparing the first
+    // node of each sequence would not catch either case: the first node is
+    // a group header, and headers are cached singletons that stay
+    // identical across a re-sort.
+    const redIds = new Set(
+      sorted.filter((t) => classify(t) === "red").map((t) => t.trip_id)
+    );
+    let sawCalm = false;
+    let redBelowCalm = false;
+    for (const node of current) {
+      if (!node.classList.contains("trip-row")) continue;
+      if (redIds.has(node.dataset.tripId)) {
+        if (sawCalm) redBelowCalm = true;
+      } else {
+        sawCalm = true;
+      }
+    }
+    const redHeldOut = [...redIds].some(
+      (id) => !current.includes(rowNodes.get(id).row)
+    );
+    state.pendingUrgent = redBelowCalm || redHeldOut;
+    renderOrderPending();
+    return;
+  }
+
+  for (let i = 0; i < wanted.length; i++) {
+    if (ui.tripList.children[i] !== wanted[i]) {
+      ui.tripList.insertBefore(wanted[i], ui.tripList.children[i] || null);
+    }
+  }
+  for (const node of [...ui.tripList.children]) {
+    if (!wanted.includes(node)) node.remove();
+  }
+  state.pendingOrder = null;
+  state.pendingUrgent = false;
+  state.pendingHeld = 0;
+  renderOrderPending();
 }
 
 // -- "what changed while I was away" -----------------------------------------
@@ -690,13 +1151,51 @@ function setView(view) {
   ui.tabLive.setAttribute("aria-selected", view === "live" ? "true" : "false");
   ui.tabHistory.setAttribute("aria-selected", view === "history" ? "true" : "false");
   // Rows are keyed by trip id; switching datasets means none of the cached
-  // nodes belong to the new list.
+  // nodes belong to the new list. The severity headers go with them —
+  // history has no severity groups, and a header left behind would sit
+  // above a list it no longer describes.
   rowNodes.forEach((n) => n.row.remove());
   rowNodes.clear();
+  groupNodes.forEach((n) => n.head.remove());
+  state.pendingOrder = null;
   renderList();
   renderTripMarkers();
   if (view === "history") refreshHistory();
 }
+
+// -- map disclosure (narrow viewports) ---------------------------------------
+//
+// Stacked into one column, the map panel put roughly a full screen of
+// terrain, legend, caveat and histogram above the trip queue — which is
+// the thing the page exists to show. The queue now comes first (see the
+// max-width:860px block in style.css) and the map starts collapsed, so
+// the corridor is one tap away rather than in the way. The choice is
+// remembered, because a dispatcher who wants the map open wants it open
+// on every reload.
+
+const MAP_NARROW = window.matchMedia("(max-width: 860px)");
+
+function applyMapCollapse() {
+  const narrow = MAP_NARROW.matches;
+  const stored = localStorage.getItem("sg_map_open");
+  const open = narrow ? stored === "1" : true;
+  ui.mapPanel.classList.toggle("is-collapsed", !open);
+  ui.mapToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  ui.mapToggle.textContent = open ? "Hide map" : "Show map";
+}
+
+ui.mapToggle.addEventListener("click", () => {
+  const open = ui.mapToggle.getAttribute("aria-expanded") === "true";
+  localStorage.setItem("sg_map_open", open ? "0" : "1");
+  applyMapCollapse();
+  // The overlay is positioned in percentages of a frame that was display:
+  // none a moment ago, so nothing needs recomputing — but the markers do
+  // need to exist, and a zone switch while collapsed may have dropped them.
+  if (!open) renderTripMarkers();
+});
+
+MAP_NARROW.addEventListener("change", applyMapCollapse);
+applyMapCollapse();
 
 ui.tabLive.addEventListener("click", () => setView("live"));
 ui.tabHistory.addEventListener("click", () => setView("history"));
@@ -928,19 +1427,120 @@ async function openDetail(tripId) {
   }
 }
 
-function fillDetail(trip) {
-  const sev = classify(trip);
+/** Render a coordinate pair with a copy control.
+ *
+ *  A dispatcher reading a position to a search team over a radio needs it
+ *  short; one pasting it into a mapping tool needs it exact. Five decimal
+ *  places is both. */
+function fillCoordField(dd, value) {
+  while (dd.firstChild) dd.removeChild(dd.firstChild);
+  if (!value) {
+    dd.textContent = "—";
+    return;
+  }
+  const wrap = el("span", "coord-value");
+  wrap.appendChild(el("span", "coord-text", value));
+  const btn = el("button", "copy-coord", "Copy");
+  btn.type = "button";
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(value);
+      btn.textContent = "Copied";
+    } catch (err) {
+      // Clipboard needs a secure context; a plain-http dashboard on a LAN
+      // does not have one. Select the text so a manual copy still works.
+      const range = document.createRange();
+      range.selectNodeContents(wrap.firstChild);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      btn.textContent = "Selected";
+    }
+    window.setTimeout(() => {
+      btn.textContent = "Copy";
+    }, 1800);
+  });
+  wrap.appendChild(btn);
+  dd.appendChild(wrap);
+}
+
+// -- the fields that go stale under an open panel ----------------------------
+//
+// Factored out of fillDetail() so that it and refreshOpenDetail() below
+// cannot drift apart. Each of these writes exactly one node and touches
+// nothing else — no disclosure state, no button state, nothing focusable —
+// because refreshOpenDetail() calls them under the dispatcher's hands.
+
+// The trip state the open panel was last rendered against, so a refresh can
+// tell "nothing moved" from "this trip escalated while you were reading it".
+let detailRenderedState = null;
+
+function fillDetailStatus(trip) {
   setText(ui.detailStatus, stateLabel(trip));
-  ui.detailStatus.className = `status-pill state-${sev}`;
+  ui.detailStatus.className = `status-pill state-${classify(trip)}`;
+}
+
+function fillDetailPredicted(trip) {
+  const elapsed = formatMins(trip.elapsed_min);
+  const predicted = formatMins(trip.predicted_crossing_min);
+  const win = formatMins(trip.monitoring_window_min);
+  const over = overdueMin(trip);
+  setText(
+    ui.detailPredicted,
+    `${elapsed} elapsed · predicted ${predicted} · window ${win}` +
+      (over != null ? ` · overdue by ${formatMins(over)}` : "")
+  );
+}
+
+function fillDetailAlert(trip) {
+  const notes = trip.notifications || [];
+  const human = notes.filter((n) => n !== "tier0");
+  if (human.length > 0) {
+    setText(
+      ui.detailAlert,
+      human.includes("tier2")
+        ? "Contact + emergency centre alerted"
+        : "Contact alerted (Tier 1)"
+    );
+    return;
+  }
+
+  // Past tense alone answers "has anyone been told?" and leaves the
+  // question a dispatcher deciding whether to act actually has — "when does
+  // somebody get told?" — as arithmetic against the window figure two rows
+  // up. The moment is already in the payload, so say it.
+  const told = notes.includes("tier0")
+    ? "Traveller asked directly — no human contacted"
+    : "Not notified";
+  const due = contactAlertDue(trip);
+  setText(
+    ui.detailAlert,
+    due === null
+      ? told
+      : `${told} — contact is texted at ${due.clock} unless they're out (in ${formatMins(due.mins)})`
+  );
+}
+
+function fillDetail(trip) {
+  fillDetailStatus(trip);
   setText(ui.detailName, trip.traveller_name || "Unknown traveller");
   setText(ui.detailMsisdn, trip.traveller_msisdn);
-  setText(ui.detailEntry, trip.entry_point);
-  setText(ui.detailLastKnown, trip.last_known_location);
+  // The network has one location fix per trip, taken at the entry gate, so
+  // on most trips these two fields are the same coordinate pair printed
+  // twice. Say it once and say why.
+  const entry = formatCoords(trip.entry_point);
+  const lastKnown = formatCoords(trip.last_known_location);
+  const sameFix = entry !== null && entry === lastKnown;
+  fillCoordField(ui.detailEntry, entry);
+  setText(
+    ui.detailEntryLabel,
+    sameFix ? "Entry point — also the last known fix" : "Entry point"
+  );
+  ui.detailLastKnownRow.hidden = sameFix;
+  if (!sameFix) fillCoordField(ui.detailLastKnown, lastKnown);
 
-  const elapsed = trip.elapsed_min != null ? `${Math.round(trip.elapsed_min)} min` : "—";
-  const predicted = trip.predicted_crossing_min ? `${trip.predicted_crossing_min} min` : "—";
-  const win = trip.monitoring_window_min ? `${trip.monitoring_window_min} min` : "—";
-  setText(ui.detailPredicted, `${elapsed} elapsed · predicted ${predicted} · window ${win}`);
+  fillDetailPredicted(trip);
 
   // Stated as a range, in the words a dispatcher would use to brief a
   // search team — never as a coordinate that implies a fix nobody has.
@@ -964,18 +1564,7 @@ function fillDetail(trip) {
   setText(ui.detailCongestion, trip.congestion_tier);
   setText(ui.detailRisk, trip.risk);
 
-  const notes = trip.notifications || [];
-  const human = notes.filter((n) => n !== "tier0");
-  setText(
-    ui.detailAlert,
-    human.length === 0
-      ? notes.includes("tier0")
-        ? "Traveller asked directly — no human contacted"
-        : "Not notified"
-      : human.includes("tier2")
-        ? "Contact + emergency centre alerted"
-        : "Contact alerted (Tier 1)"
-  );
+  fillDetailAlert(trip);
   setText(
     ui.detailConvoy,
     trip.convoy_id
@@ -985,10 +1574,21 @@ function fillDetail(trip) {
 
   if (trip.decision_record) {
     renderDecisionRecord(ui.detailRecord, trip.decision_record);
+    // The reasoning line is the one that justifies the risk score, so it
+    // is the summary — readable without opening the disclosure at all.
+    const reasoning = parseAgentRecord(trip.decision_record).find(
+      (r) => r.key === "reasoning"
+    );
+    setText(ui.detailRecordLead, reasoning ? reasoning.value : "");
+    if (!reasoning) ui.detailRecordLead.textContent = "";
   } else {
     while (ui.detailRecord.firstChild) ui.detailRecord.removeChild(ui.detailRecord.firstChild);
     ui.detailRecord.appendChild(el("p", "record-empty", "No decision record yet."));
+    ui.detailRecordLead.textContent = "";
   }
+  // Opens closed on every trip, so the panel always starts at the same
+  // height and the pinned actions are always where they were last time.
+  ui.detailRecordBlock.open = false;
 
   if (trip.escalation_record) {
     renderEscalationRecord(ui.detailEscalation, trip.escalation_record);
@@ -999,6 +1599,56 @@ function fillDetail(trip) {
 
   ui.detailHandoff.onclick = () => copyHandoff(trip);
   resetResolveButton(trip);
+  detailRenderedState = trip.state;
+  ui.detailGone.hidden = true;
+}
+
+/** Bring the open panel's volatile fields up to date on each poll.
+ *
+ *  The panel used to be a photograph. Everything in it was written once, at
+ *  the moment it was opened, and `fillDetail()` was never called again —
+ *  so a dispatcher who opened a trip and then watched it was reading
+ *  open-time numbers on the one screen they had deliberately chosen to look
+ *  at, and the pill still said "In transit" minutes after that same trip
+ *  had turned red in the list behind the scrim.
+ *
+ *  Deliberately NOT a re-run of fillDetail(): that would collapse the Agent
+ *  Decision Record the dispatcher just opened and reset a resolve
+ *  confirmation under their hand, which is a worse bug than the one being
+ *  fixed here. Only the fields that can actually change are rewritten. */
+function refreshOpenDetail() {
+  if (ui.detailPanel.hidden || !state.selectedTripId) return;
+  const trip = state.trips.find((t) => t.trip_id === state.selectedTripId);
+
+  if (!trip) {
+    // Resolved from another console, or closed because the traveller
+    // reached the exit gate. The alternative to saying so is a panel of
+    // numbers that quietly stopped moving — indistinguishable from a trip
+    // that is simply calm, and the thing a dispatcher would act on.
+    ui.detailGone.hidden = false;
+    return;
+  }
+  ui.detailGone.hidden = true;
+
+  fillDetailStatus(trip);
+  fillDetailPredicted(trip);
+  fillDetailAlert(trip);
+
+  // Resolve is destructive and has a confirmation step in front of it.
+  // Rebuilding the button on every poll would wipe a confirmation the
+  // dispatcher has already armed — three seconds is not long enough to read
+  // "Clear the escalation for Layla Haddad?" and decide — so it is touched
+  // only when the trip's state actually moved and nothing is armed.
+  if (trip.state !== detailRenderedState && pendingResolveId === null) {
+    resetResolveButton(trip);
+    detailRenderedState = trip.state;
+  }
+
+  // The brief is generated from whatever trip object the handler closed
+  // over, so re-point it at the fresh one: a handoff copied ten minutes
+  // into an escalation must not carry ten-minute-old elapsed time into
+  // somebody else's radio call.
+  ui.detailHandoff.onclick = () => copyHandoff(trip);
 }
 
 // -- resolve, with a confirmation step ---------------------------------------
@@ -1081,8 +1731,13 @@ function handoffText(trip) {
   L.push(`Traveller:      ${trip.traveller_name || "unknown"} (${trip.traveller_msisdn || "no number"})`);
   L.push(`Corridor:       ${zone ? zone.label : trip.zone_id}`);
   L.push(`Entered:        ${trip.entered_at || "—"}`);
-  L.push(`Elapsed:        ${trip.elapsed_min != null ? Math.round(trip.elapsed_min) + " min" : "—"}` +
-         `  (predicted ${trip.predicted_crossing_min || "—"} min, window ${trip.monitoring_window_min || "—"} min)`);
+  L.push(`Elapsed:        ${formatMins(trip.elapsed_min)}` +
+         `  (predicted ${formatMins(trip.predicted_crossing_min)}, ` +
+         `window ${formatMins(trip.monitoring_window_min)})`);
+  const handoffOver = overdueMin(trip);
+  if (handoffOver != null) {
+    L.push(`Overdue by:     ${formatMins(handoffOver)}`);
+  }
   L.push("");
   L.push("SEARCH AREA");
   if (est && zone) {
@@ -1098,7 +1753,7 @@ function handoffText(trip) {
   }
   L.push("");
   L.push("LAST REAL POSITION (entry gate)");
-  L.push(`  ${trip.entry_point || "unavailable"}`);
+  L.push(`  ${formatCoords(trip.entry_point) || "unavailable"}`);
   L.push("");
   L.push("CONDITIONS AT ENTRY");
   L.push(`  Battery:      ${trip.battery_at_entry != null ? trip.battery_at_entry + "% (" + (trip.battery_band || "—") + ")" : "—"}`);
@@ -1109,6 +1764,15 @@ function handoffText(trip) {
   L.push("WHO HAS BEEN TOLD");
   const notes = (trip.notifications || []).filter((n) => n !== "tier0");
   L.push(`  ${notes.length === 0 ? "nobody" : notes.join(", ")}`);
+  // "nobody" on its own reads as a decision. It is a countdown, and the
+  // person this brief gets pasted to is the one who needs to know how much
+  // of it is left before the escalation happens without them.
+  const due = notes.length === 0 ? contactAlertDue(trip) : null;
+  if (due) {
+    L.push(
+      `  Contact is texted at ${due.clock} unless they're out (in ${formatMins(due.mins)}).`
+    );
+  }
   if (trip.decision_record) {
     L.push("");
     L.push("AGENT DECISION AT ENTRY");
@@ -1158,6 +1822,8 @@ function closeDetail() {
   pendingResolveId = null;
   ui.detailResolveConfirm.hidden = true;
   ui.detailResolve.hidden = false;
+  ui.detailGone.hidden = true;
+  detailRenderedState = null;
   state.selectedTripId = null;
   renderList();
   renderTripMarkers();
@@ -1335,16 +2001,24 @@ async function pollTrips() {
   try {
     const trips = await api("/dashboard/trips");
     state.trips = trips;
+    syncClocks(trips);
     state.lastPollOk = true;
     state.lastPollAt = Date.now();
     ui.liveIndicator.classList.remove("stale");
     checkForNewEscalations(trips);
     renderList();
     renderTripMarkers();
+    // The open panel is a view onto this same data and has to move with it.
+    refreshOpenDetail();
   } catch (e) {
     state.lastPollOk = false;
     ui.liveIndicator.classList.add("stale");
     console.error("poll failed", e);
+    // The trips already on screen are kept — last known is better than
+    // nothing — but the empty state has to switch on the poll that failed,
+    // not whenever something else happens to re-render. On a cold load
+    // there is nothing else: this is the only call that will ever come.
+    renderList();
   }
   renderFreshness();
 }
@@ -1355,7 +2029,10 @@ let freshnessTimer = null;
 function startPolling() {
   stopPolling();
   pollTimer = setInterval(pollTrips, POLL_MS);
-  freshnessTimer = setInterval(renderFreshness, 1000);
+  freshnessTimer = setInterval(() => {
+    renderFreshness();
+    renderRowClocks();
+  }, 1000);
 }
 
 function stopPolling() {

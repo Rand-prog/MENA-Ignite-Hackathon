@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="theme-color" content="#0b0f0e" />
 <title>SignalGuard — Emergency Centre</title>
-<link rel="stylesheet" href="css/style.css?v=4" />
+<link rel="stylesheet" href="css/style.css?v=6" />
 </head>
 <body>
 
@@ -57,7 +57,15 @@
 <main class="layout">
   <section class="map-panel" aria-label="Corridor map">
     <div class="panel-head">
-      <h2 id="zone-label">Loading zone…</h2>
+      <div class="panel-head-row">
+        <h2 id="zone-label">Loading zone…</h2>
+        <!-- Narrow viewports only (see the max-width:860px block in
+             style.css). There the queue comes first and the map is a
+             reference the dispatcher opens deliberately, rather than 700px
+             of terrain between them and the list they came for. -->
+        <button id="map-toggle" class="map-toggle" type="button"
+                aria-expanded="true" aria-controls="map-collapse">Hide map</button>
+      </div>
       <span class="panel-hint">Estimated positions · not a live feed</span>
       <!-- Only rendered when more than one zone exists; a dropdown with a
            single option is furniture, not a control. -->
@@ -66,6 +74,7 @@
         <select id="zone-select" hidden></select>
       </label>
     </div>
+    <div class="map-collapse" id="map-collapse">
     <div class="map-frame" id="map-frame">
       <img id="map-image" alt="" />
       <!-- Uncertainty arcs sit under the markers so a marker is always
@@ -95,6 +104,7 @@
       <h3>How long this corridor actually takes</h3>
       <div id="stats-body"></div>
     </div>
+    </div><!-- /#map-collapse -->
   </section>
 
   <section class="list-panel" aria-label="Trips">
@@ -113,6 +123,12 @@
       </div>
       <ul id="change-banner-body"></ul>
     </aside>
+    <!-- The queue re-sorts by severity on every poll. While the pointer is
+         inside the list (or a detail panel is open) that reordering is
+         held back and announced here instead — a row that moves out from
+         under a cursor mid-click is how the wrong traveller gets marked
+         resolved. Clicking this applies the held order. -->
+    <button class="order-pending" id="order-pending" type="button" hidden></button>
     <div id="trip-list" class="trip-list"></div>
     <div id="empty-state" class="empty-state">
       <div data-empty-live>
@@ -122,6 +138,18 @@
       <div data-empty-history hidden>
         <p>No completed crossings yet.</p>
         <p class="muted">Trips move here once they close, so the queue above only ever shows what still needs watching.</p>
+      </div>
+      <!-- An empty queue has two opposite causes — nothing is crossing, or
+           nothing is reaching us — and this is the largest element on the
+           page, so getting it wrong is not a small mistake. "No trips in
+           the corridor right now" is a claim about the corridor; when the
+           poll is failing this console has no idea what the corridor is
+           doing and must say that instead. The app refuses the same
+           mistake for the same reason — see home_shell.dart's
+           _backendUnreachable. -->
+      <div data-empty-offline hidden>
+        <p>Not connected to the backend.</p>
+        <p class="muted">This queue is not being updated. Crossings could be running that this console cannot see. Check the Backend field at the top of the page.</p>
       </div>
     </div>
   </section>
@@ -135,9 +163,23 @@
   <h3 id="detail-name">—</h3>
   <p class="detail-sub" id="detail-msisdn">—</p>
 
+  <!-- A trip can leave the live queue while its panel is open on this
+       screen — resolved from another console, or closed because the
+       traveller reached the exit gate. The figures below then stop being
+       refreshed, and a dispatcher has no way to tell a frozen panel from a
+       calm one, so the panel says which it is. -->
+  <p class="detail-gone" id="detail-gone" hidden>
+    This trip has left the live queue — it was resolved or closed elsewhere.
+    Nothing below is being updated any more.
+  </p>
+
   <dl class="detail-grid">
-    <div><dt>Entry point</dt><dd id="detail-entry">—</dd></div>
-    <div><dt>Last known location</dt><dd id="detail-lastknown">—</dd></div>
+    <!-- The network has exactly one location fix per trip, taken at the
+         entry gate, so these two are the same value on most trips. When
+         they are, the second row is hidden and the first says so rather
+         than printing the same coordinate pair twice. -->
+    <div id="detail-entry-row"><dt id="detail-entry-label">Entry point</dt><dd id="detail-entry">—</dd></div>
+    <div id="detail-lastknown-row"><dt>Last known location</dt><dd id="detail-lastknown">—</dd></div>
     <div><dt>Predicted vs elapsed</dt><dd id="detail-predicted">—</dd></div>
     <div class="span-2"><dt>Where they could be</dt><dd id="detail-position">—</dd></div>
     <div><dt>Battery at entry</dt><dd id="detail-battery">—</dd></div>
@@ -147,26 +189,40 @@
     <div class="span-2"><dt>Convoy</dt><dd id="detail-convoy">—</dd></div>
   </dl>
 
-  <div class="decision-record">
-    <h4>Agent Decision Record</h4>
-    <div id="detail-record" class="record-card"></div>
-  </div>
+  <!-- A disclosure rather than a fixed-height scroller. The card used to
+       be capped at 260px with its own overflow, which put a second
+       scrollbar inside a panel that already scrolls and clipped the
+       reasoning to about six lines. The line that justifies the risk
+       score is the summary, so it is readable without opening anything;
+       the signals, model and history behind it are one click away. -->
+  <details class="decision-record disclosure" id="detail-record-block">
+    <summary>
+      <span class="disclosure-title">Agent Decision Record</span>
+      <span class="disclosure-lead" id="detail-record-lead"></span>
+    </summary>
+    <div id="detail-record"></div>
+  </details>
 
   <div class="decision-record" id="detail-escalation-block" hidden>
     <h4>Escalation Agent Record</h4>
     <div id="detail-escalation"></div>
   </div>
 
-  <button class="resolve-btn ghost" id="detail-handoff" type="button">Copy handoff brief</button>
-  <button class="resolve-btn" id="detail-resolve">Mark Resolved</button>
+  <!-- Pinned to the bottom of the panel. These used to sit below both
+       records, which on an escalated trip is a full screen of scrolling
+       between reading the situation and being able to act on it. -->
+  <div class="detail-actions">
+    <button class="resolve-btn ghost" id="detail-handoff" type="button">Copy handoff brief</button>
+    <button class="resolve-btn" id="detail-resolve">Mark Resolved</button>
 
-  <!-- Resolving clears a live escalation and there is no undo. One stray
-       click on a 40px button should not be able to do that. -->
-  <div class="resolve-confirm" id="detail-resolve-confirm" hidden>
-    <p data-confirm-text></p>
-    <div class="resolve-confirm-actions">
-      <button class="resolve-btn danger" type="button" data-confirm-yes>Yes, resolve</button>
-      <button class="resolve-btn ghost" type="button" data-confirm-no>Cancel</button>
+    <!-- Resolving clears a live escalation and there is no undo. One stray
+         click on a 40px button should not be able to do that. -->
+    <div class="resolve-confirm" id="detail-resolve-confirm" hidden>
+      <p data-confirm-text></p>
+      <div class="resolve-confirm-actions">
+        <button class="resolve-btn danger" type="button" data-confirm-yes>Yes, resolve</button>
+        <button class="resolve-btn ghost" type="button" data-confirm-no>Cancel</button>
+      </div>
     </div>
   </div>
 </aside>
@@ -179,6 +235,6 @@
      During the hackathon that meant a browser silently running a
      previous build of this file while the disk had the current one.
      Bump on every change. -->
-<script src="js/app.js?v=4"></script>
+<script src="js/app.js?v=6"></script>
 </body>
 </html>

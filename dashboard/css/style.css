@@ -68,10 +68,17 @@ body {
 
 /* ---------- topbar ---------- */
 
+/* Wraps rather than overflows. Unwrapped, this row was 746px wide inside
+   a 375px viewport — the backend field, both toggles and the freshness
+   readout all sat off the right edge and took the whole page's horizontal
+   scroll with them. Nothing in here is optional enough to hide, so it
+   wraps onto a second line instead. */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
   padding: 14px 24px;
   border-bottom: 1px solid var(--border);
   flex: none;
@@ -95,7 +102,13 @@ body {
   margin-left: 2px;
 }
 
-.topbar-right { display: flex; align-items: center; gap: 18px; }
+.topbar-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  min-width: 0;
+}
 
 .backend-field {
   display: flex;
@@ -103,6 +116,10 @@ body {
   gap: 8px;
   font-size: 12px;
   color: var(--text-muted);
+  /* min-width:0 is what actually lets it shrink — a flex item defaults to
+     min-width:auto and refuses to go below its input's width. */
+  min-width: 0;
+  flex: 1 1 200px;
 }
 
 .backend-field input {
@@ -112,7 +129,9 @@ body {
   border-radius: 8px;
   padding: 6px 10px;
   font-size: 12px;
-  width: 200px;
+  width: 100%;
+  max-width: 240px;
+  min-width: 0;
   font-family: ui-monospace, monospace;
 }
 
@@ -346,12 +365,19 @@ body {
   padding-right: 4px;
 }
 
+/* Row weight tracks severity. Every row used to be the same height, the
+   same padding and the same type size, with a 10px dot and a small pill
+   carrying the entire difference between "in transit" and "nobody has
+   heard from this person in sixteen hours". At four trips that is a
+   reading exercise; at twenty it is a miss. Red rows get a thick left
+   edge, more air and a larger name; green rows condense. */
 .trip-row {
   display: flex;
   align-items: center;
   gap: 12px;
   background: var(--surface);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
   border-radius: 12px;
   padding: 12px 14px;
   cursor: pointer;
@@ -359,6 +385,21 @@ body {
   text-align: left;
   width: 100%;
 }
+
+.trip-row.state-green {
+  padding-top: 9px;
+  padding-bottom: 9px;
+  border-left-color: rgba(47, 217, 138, 0.45);
+}
+.trip-row.state-amber { border-left-color: var(--amber); }
+.trip-row.state-red {
+  border-left-width: 5px;
+  border-left-color: var(--danger);
+  padding-top: 14px;
+  padding-bottom: 14px;
+  background: linear-gradient(90deg, rgba(224, 101, 79, 0.09), transparent 55%), var(--surface);
+}
+.trip-row.state-red .trip-name { font-size: 15.5px; }
 
 .trip-row:hover { background: var(--surface-raised); }
 .trip-row.selected { border-color: var(--accent); background: var(--surface-raised); }
@@ -397,6 +438,26 @@ body {
   margin-top: 2px;
 }
 
+/* Elapsed was the prominent number and overdue-by was left as arithmetic
+   for the reader: "1015 min elapsed / 105 min window" is a subtraction
+   performed under stress. This is the answer, counting up live. */
+.trip-row .trip-overdue {
+  display: none;
+  margin-top: 3px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+}
+.trip-row.state-red .trip-overdue { display: block; }
+.trip-row.state-amber .trip-overdue {
+  display: block;
+  color: var(--amber);
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
 .trip-row .trip-state-label {
   font-size: 11px;
   font-weight: 700;
@@ -431,7 +492,12 @@ body {
   width: min(420px, 100vw);
   background: var(--surface);
   border-left: 1px solid var(--border);
-  padding: 24px;
+  /* No bottom padding: .detail-actions is sticky to the bottom of this
+     scrollport, and a sticky offset is measured from the padding box. With
+     24px here the bar parked 24px short of the panel edge and left a strip
+     of scrolling content visible beneath it. The bar supplies that padding
+     itself instead. */
+  padding: 24px 24px 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   z-index: 20;
@@ -510,13 +576,16 @@ body {
    accumulates a tier1 block, later a tier2 block) — each gets its own
    .record-card so a dispatcher can tell them apart at a glance. */
 
+/* No max-height and no overflow here on purpose. This card sits inside
+   .detail-panel, which is itself the scroll container; capping it put a
+   second scrollbar directly beside the first and clipped the agent's
+   reasoning to roughly six lines. Length is controlled by the disclosure
+   this now lives in (see .disclosure below), not by a scroll box. */
 .record-card {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 14px 16px;
-  max-height: 260px;
-  overflow-y: auto;
 }
 .record-card + .record-card { margin-top: 10px; }
 
@@ -642,8 +711,20 @@ body {
   z-index: 10;
 }
 
+/* Below the two-column breakpoint the panels stack, and the order they
+   stacked in put the map, its legend, a four-line disclaimer and the
+   corridor histogram above the trip queue — roughly a full screen of
+   context before the list the dispatcher opened the page for. The queue
+   goes first; the map is still there, collapsed by default, one tap away
+   (see #map-toggle). */
 @media (max-width: 860px) {
-  .layout { grid-template-columns: 1fr; grid-auto-rows: minmax(240px, auto) 1fr; }
+  .layout {
+    display: flex;
+    flex-direction: column;
+  }
+  .list-panel { order: 1; }
+  .map-panel { order: 2; }
+  .list-panel { min-height: 60vh; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -903,5 +984,231 @@ body {
 .shortcut-hint dd { margin: 0; color: var(--text-secondary); }
 
 /* -- handoff --------------------------------------------------------------- */
+/* Spacing comes from .detail-actions' gap now that both buttons live in
+   the pinned action bar. */
 
-#detail-handoff { margin-bottom: 8px; }
+
+/* ==========================================================================
+   Queue grouping, held reordering, pinned detail actions, coordinate
+   fields, and the narrow-viewport map disclosure.
+   ========================================================================== */
+
+/* -- group headers --------------------------------------------------------- */
+/* Severity sorting alone left the escalated trip as row one of an otherwise
+   identical list, which reads as "first" rather than as "different". A
+   header names the group and carries its count, and sticks to the top of
+   the scroller so the boundary survives scrolling a long queue. */
+
+.group-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 2px 0 -2px;
+  padding: 6px 2px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg);
+}
+.group-head + .trip-row { margin-top: 0; }
+/* j/k navigation scrolls rows into view with block:"nearest", which would
+   otherwise tuck the row under the sticky header it belongs to. */
+.trip-row { scroll-margin-top: 34px; }
+.group-head .group-count {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.group-head.for-red { color: var(--danger); }
+.group-head.for-amber { color: var(--amber); }
+
+/* -- held reordering ------------------------------------------------------- */
+/* Shown only while the queue's true order is being held back. Red when one
+   of the held changes is an escalation, because that is the case where
+   "the list is not currently re-sorting" has to be visible rather than
+   merely true. */
+
+.order-pending {
+  flex: none;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.order-pending:hover { color: var(--text); border-color: var(--text-muted); }
+.order-pending.is-urgent {
+  border-color: rgba(224, 101, 79, 0.55);
+  background: rgba(224, 101, 79, 0.12);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* -- pinned detail actions ------------------------------------------------- */
+/* Sticks to the bottom of the scrolling panel. The negative margins bleed
+   it through .detail-panel's 24px padding so it reads as a bar rather than
+   as a floating card. */
+
+.detail-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 24px -24px 0;
+  padding: 14px 24px 22px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -14px 26px rgba(0, 0, 0, 0.35);
+}
+.detail-actions .resolve-confirm { margin-top: 4px; }
+
+/* -- decision-record disclosure -------------------------------------------- */
+
+.disclosure { border: 0; padding: 0; }
+.disclosure > summary {
+  display: block;
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 12px 10px 26px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  position: relative;
+}
+.disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure > summary::before {
+  content: "▸";
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  transition: transform 120ms ease;
+}
+.disclosure[open] > summary::before { transform: rotate(90deg); }
+.disclosure[open] > summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: transparent;
+}
+.disclosure > summary:hover { border-color: var(--text-muted); }
+
+.disclosure-title {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+/* The one line that justifies the risk score, visible without opening
+   anything. Clamped rather than truncated mid-word. */
+.disclosure-lead {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 5px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  font-style: italic;
+  color: var(--text);
+}
+.disclosure-lead:empty { display: none; }
+.disclosure[open] > summary .disclosure-lead { display: none; }
+.disclosure[open] .record-card {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+/* -- coordinate fields ------------------------------------------------------ */
+
+.coord-value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.coord-text { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 13px; }
+.copy-coord {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10.5px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+.copy-coord:hover { color: var(--text); border-color: var(--text-muted); }
+
+/* -- map disclosure (narrow only) ------------------------------------------- */
+
+.panel-head-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.map-toggle {
+  display: none;
+  flex: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.map-toggle:hover { color: var(--text); border-color: var(--text-muted); }
+
+.map-collapse {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+@media (max-width: 860px) {
+  .map-toggle { display: inline-block; }
+  .map-panel.is-collapsed .map-collapse { display: none; }
+  .map-panel.is-collapsed { padding-bottom: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .disclosure > summary::before { transition: none; }
+}
+
+/* -- a trip that left the queue while its panel was open ------------------- */
+
+/* Amber, not red: nothing has gone wrong, the panel has simply stopped
+   being live. Red here would compete with the status pill directly above
+   it, which is the one carrying the actual severity. */
+.detail-gone {
+  margin: 0 0 18px;
+  padding: 10px 12px;
+  border: 1px solid rgba(230,185,77,.4);
+  background: rgba(230,185,77,.08);
+  border-radius: 10px;
+  color: var(--amber);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
