@@ -304,7 +304,16 @@ function renderApiLog(rows) {
     const row = el("div", "demo-api-row");
     row.appendChild(el("span", "demo-api-time", fmtClock(r.ts)));
     row.appendChild(el("span", "demo-api-name", r.api));
-    row.appendChild(el("span", `demo-api-status ${Number(r.status) >= 400 ? "bad" : "good"}`, r.status));
+    // Three outcomes, and only one of them is a fault. A negative status
+    // is the marker for a call that was never attempted at all — today
+    // that is a contact message with no SMS gateway configured (see
+    // whatsapp_client.NOT_ATTEMPTED) — and printing a raw "-1" says
+    // nothing while colouring it red says the wrong thing.
+    const code = Number(r.status);
+    const cls = code < 0 ? "skip" : code >= 400 ? "bad" : "good";
+    row.appendChild(
+      el("span", `demo-api-status ${cls}`, code < 0 ? "SKIP" : r.status)
+    );
     row.appendChild(el("span", "demo-api-latency", `${Math.round(r.latency_ms)} ms`));
     ui.apiLog.appendChild(row);
   });

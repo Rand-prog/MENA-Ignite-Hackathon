@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="theme-color" content="#0b0f0e" />
 <title>SignalGuard — Emergency Centre</title>
-<link rel="stylesheet" href="css/style.css?v=6" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0f0e'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%232fd98a'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%232fd98a' stroke-opacity='.45' stroke-width='2'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="css/style.css?v=11" />
 </head>
 <body>
 
@@ -37,6 +38,13 @@
         inputmode="url"
       />
     </label>
+    <!-- Whether the network layer is answering, in the one place a
+         dispatcher is always looking. A degraded CAMARA API is the single
+         failure this console cannot infer from its own queue. -->
+    <a class="api-chip" id="api-chip" href="#api-panel-title" title="CAMARA network API activity">
+      <span class="api-chip-dot" aria-hidden="true"></span>
+      <span id="api-chip-text">CAMARA —</span>
+    </a>
     <button id="mute-toggle" class="mute-toggle" type="button" aria-pressed="false">🔔 Alerts on</button>
     <button id="shortcut-toggle" class="mute-toggle" type="button" aria-controls="shortcut-hint">⌨ Keys</button>
     <div class="live-indicator" id="live-indicator">
@@ -104,6 +112,34 @@
       <h3>How long this corridor actually takes</h3>
       <div id="stats-body"></div>
     </div>
+
+    <!-- The call layer the queue above is made of. Every trip on this
+         screen exists because a CAMARA Geofencing notification arrived,
+         and every figure in its detail panel came out of Congestion
+         Insights, Location Retrieval or a reachability check. When one of
+         those five APIs starts failing the queue does not turn red — it
+         goes quiet, which on this screen is indistinguishable from a calm
+         corridor. So the console shows the layer underneath it.
+
+         This is not the demo page's call log (demo.html) — that one is a
+         recording aid and lives on a page the console knows nothing
+         about. This is operational: /dashboard/api-activity is mounted in
+         every build, demo mode or not. -->
+    <section class="api-panel" id="api-panel" aria-labelledby="api-panel-title">
+      <div class="api-panel-head">
+        <h3 id="api-panel-title">Network API activity</h3>
+        <span class="api-window" id="api-window">last 24h</span>
+      </div>
+      <p class="api-lead" id="api-lead">—</p>
+      <ul class="api-list" id="api-list"></ul>
+      <details class="api-feed" id="api-feed">
+        <summary>
+          <span class="disclosure-title">Recent calls</span>
+          <span class="disclosure-lead" id="api-feed-lead"></span>
+        </summary>
+        <ol class="api-calls" id="api-calls"></ol>
+      </details>
+    </section>
     </div><!-- /#map-collapse -->
   </section>
 
@@ -150,6 +186,21 @@
       <div data-empty-offline hidden>
         <p>Not connected to the backend.</p>
         <p class="muted">This queue is not being updated. Crossings could be running that this console cannot see. Check the Backend field at the top of the page.</p>
+        <!-- Shown only on the hosted copy (see renderList): a reviewer who
+             opens the public URL is not looking at a broken console, they
+             are looking at a console with nothing to talk to, and those
+             two deserve different sentences. -->
+        <p class="muted" data-empty-hosted hidden>
+          This is the hosted build of the console. It is a client — the trip
+          queue, the corridor map and the CAMARA call log are all read from a
+          SignalGuard backend, and there is no public one to read from,
+          because the backend holds real phone numbers and calls a real
+          operator API with a real key. Start one locally in about five
+          minutes (<code>REVIEWERS.md</code> in the repository) and put its
+          address in the Backend field above. Serving this page from
+          <code>localhost</code> as well is the path that is guaranteed to
+          work; a browser may refuse the call from a page loaded over HTTPS.
+        </p>
       </div>
     </div>
   </section>
@@ -208,6 +259,19 @@
     <div id="detail-escalation"></div>
   </div>
 
+  <!-- Provenance for everything above it. The grid asks a dispatcher to
+       act on "congestion light, risk 0.62, last known 24.61, 39.42" —
+       four figures whose source is a third-party API call made minutes
+       ago. This is that call: which CAMARA API, which endpoint, what it
+       returned, how long it took. -->
+  <details class="decision-record disclosure" id="detail-api-block">
+    <summary>
+      <span class="disclosure-title">CAMARA calls for this crossing</span>
+      <span class="disclosure-lead" id="detail-api-lead"></span>
+    </summary>
+    <ol class="api-calls" id="detail-api-calls"></ol>
+  </details>
+
   <!-- Pinned to the bottom of the panel. These used to sit below both
        records, which on an escalated trip is a full screen of scrolling
        between reading the situation and being able to act on it. -->
@@ -235,6 +299,6 @@
      During the hackathon that meant a browser silently running a
      previous build of this file while the disk had the current one.
      Bump on every change. -->
-<script src="js/app.js?v=6"></script>
+<script src="js/app.js?v=11"></script>
 </body>
 </html>

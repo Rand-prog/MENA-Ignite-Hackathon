@@ -41,7 +41,10 @@ button, a, .trip-marker {
   padding: 10px 16px;
   border-radius: 8px;
   z-index: 100;
-  transform: translateY(-120%);
+  /* Far enough to actually clear the viewport. -120% of a ~41px box still
+     left a 4px sliver of bright accent green across the top-left corner on
+     every page load — small, but the first thing on screen. */
+  transform: translateY(-220%);
   transition: transform 150ms ease;
 }
 .skip-link:focus {
@@ -1211,4 +1214,179 @@ body {
   color: var(--amber);
   font-size: 12.5px;
   line-height: 1.5;
+}
+
+
+/* ==========================================================================
+   Network API activity — the CAMARA call layer under the queue.
+
+   Styled as instrumentation rather than as content: monospace paths,
+   tabular numerals, status carried by a small coloured pip. It sits below
+   the corridor stats in the left column because it is a thing a dispatcher
+   consults, not a thing they watch — the topbar chip is what watches.
+   ========================================================================== */
+
+.api-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.api-chip:hover { color: var(--text); border-color: var(--text-muted); }
+.api-chip-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex: none;
+}
+.api-chip.is-ok .api-chip-dot { background: var(--accent); }
+.api-chip.is-degraded .api-chip-dot { background: var(--amber); }
+.api-chip.is-down .api-chip-dot { background: var(--danger); }
+.api-chip.is-degraded, .api-chip.is-down { color: var(--text); }
+.api-chip.is-down { border-color: rgba(224,101,79,.55); }
+
+.api-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.api-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.api-panel h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+.api-window { font-size: 11px; color: var(--text-muted); }
+.api-lead { margin: 0 0 12px; font-size: 12px; color: var(--text-secondary); }
+
+.api-list { list-style: none; margin: 0 0 12px; padding: 0; }
+.api-row {
+  display: grid;
+  grid-template-columns: 9px 1fr auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.api-row:last-child { border-bottom: 0; }
+/* An API with no calls yet is shown, not omitted: "we have not needed
+   Quality on Demand on this corridor yet" and "Quality on Demand is
+   refusing us" are different facts, and a missing row states neither. */
+.api-row.is-idle { opacity: 0.5; }
+.api-pip {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  align-self: center;
+}
+.api-row.is-ok .api-pip { background: var(--accent); }
+.api-row.is-failed .api-pip { background: var(--danger); }
+.api-name { font-size: 13px; color: var(--text); }
+.api-spec {
+  display: block;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.api-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.api-count .api-fail { color: var(--danger); }
+
+.api-calls {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.api-call {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11.5px;
+}
+.api-call-status {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.api-call.is-failed .api-call-status { color: var(--danger); }
+.api-call.is-failed { border-color: rgba(224,101,79,.45); }
+.api-call-method {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.4px;
+}
+.api-call-path {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.api-call-api { display: block; color: var(--text); font-family: inherit; font-size: 11.5px; }
+.api-call-meta {
+  color: var(--text-muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.api-feed { margin-top: 4px; }
+.api-feed > summary { margin-bottom: 8px; }
+
+/* A network fix that cannot be where the traveller is. See
+   fixOffCorridorKm() in app.js — this is the caveat, not a style flourish:
+   the number above it is the one a dispatcher would otherwise read to a
+   search team. */
+.coord-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--amber);
+}
+
+/* "Never attempted" is not a failure. See apiCallRow() — a channel with no
+   credentials configured is a build fact, and rendering it in the same red
+   as a rejected CAMARA call teaches a dispatcher to stop reading the red. */
+.api-call.is-skipped { border-style: dashed; }
+.api-call.is-skipped .api-call-status { color: var(--text-muted); font-weight: 600; }
+.api-count .api-skip { color: var(--text-muted); }
+
+/* The hosted-copy explanation in the empty state. Longer than the rest of
+   that block on purpose — it is the only text a reviewer who opens the
+   public URL has to go on. */
+.empty-state [data-empty-hosted] {
+  max-width: 52ch;
+  margin: 14px auto 0;
+  text-align: left;
+  line-height: 1.6;
+}
+.empty-state code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
 }

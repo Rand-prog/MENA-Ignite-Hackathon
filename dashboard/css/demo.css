@@ -228,6 +228,8 @@
 .demo-api-status { flex: 0 0 auto; }
 .demo-api-status.good { color: var(--accent); }
 .demo-api-status.bad { color: var(--danger); }
+/* Never attempted — see demo.js. Not a fault, so not red. */
+.demo-api-status.skip { color: var(--text-muted); }
 
 .demo-log-label { color: var(--text); flex: 0 0 auto; }
 .demo-log-detail { color: var(--text-secondary); flex: 1 1 auto; word-break: break-word; }

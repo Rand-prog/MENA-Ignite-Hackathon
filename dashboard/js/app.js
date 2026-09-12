@@ -22,6 +22,14 @@
 const DEFAULT_BACKEND = "http://127.0.0.1:8000";
 const POLL_MS = 3000;
 
+/** True when this page is being served from somewhere other than the
+ *  reviewer's own machine — a GitHub Pages copy, say. The console is a pure
+ *  client, so a hosted copy is fully functional and has nothing to talk to;
+ *  it should say the second part rather than looking broken. */
+const IS_HOSTED =
+  location.protocol === "https:" &&
+  !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+
 const state = {
   backendUrl: localStorage.getItem("sg_backend_url") || DEFAULT_BACKEND,
   zones: [],
@@ -58,6 +66,10 @@ const state = {
   pendingOrder: null,
   pendingUrgent: false,
   pendingHeld: 0,
+  // /dashboard/api-activity: the per-API roll-up and the recent call feed.
+  // Polled on a slower cadence than the queue (see API_EVERY) because
+  // nothing on this screen needs to act on it within 3 seconds.
+  apiActivity: null,
 };
 
 // -- DOM helpers -------------------------------------------------------------
@@ -150,6 +162,45 @@ function formatCoords(value) {
   const m = String(value).match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
   if (!m) return String(value);
   return `${Number(m[1]).toFixed(5)}, ${Number(m[2]).toFixed(5)}`;
+}
+
+/** Great-circle kilometres between two lat/lon pairs. */
+function kmBetween(aLat, aLon, bLat, bLon) {
+  const R = 6371;
+  const rad = Math.PI / 180;
+  const dLat = (bLat - aLat) * rad;
+  const dLon = (bLon - aLon) * rad;
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(aLat * rad) * Math.cos(bLat * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+/** How far a network location fix sits from the corridor it belongs to, or
+ *  null when either half is unknown.
+ *
+ *  Worth checking rather than assuming. A fix that is hundreds of
+ *  kilometres from the gate the traveller crossed is not a position, it is
+ *  a fault — the Nokia sandbox's shared simulator device reports a fixed
+ *  European location regardless of which zone is armed, and on a live
+ *  operator connection the same reading would mean a mis-provisioned line
+ *  or the wrong MSISDN. Either way a console that prints it under "last
+ *  known location" without comment is handing a search team a coordinate
+ *  nobody should drive to. */
+function fixOffCorridorKm(trip, value) {
+  const zone = zoneFor(trip);
+  if (!zone || !value) return null;
+  const m = String(value).match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!m) return null;
+  const lat = Number(m[1]);
+  const lon = Number(m[2]);
+  const d = Math.min(
+    kmBetween(lat, lon, zone.entry_gate.lat, zone.entry_gate.lon),
+    kmBetween(lat, lon, zone.exit_gate.lat, zone.exit_gate.lon)
+  );
+  // Generous: a real fix can legitimately land a cell-sector's distance
+  // outside the gate circle, and on a 100 km corridor the far gate is far.
+  return d > 50 ? Math.round(d) : null;
 }
 
 /** Stable perpendicular lane for a trip's marker and cone, 0-indexed from
@@ -292,6 +343,18 @@ const ui = {
   tabHistory: el_("tab-history"),
   statsPanel: el_("stats-panel"),
   statsBody: el_("stats-body"),
+  apiChip: el_("api-chip"),
+  apiChipText: el_("api-chip-text"),
+  apiPanel: el_("api-panel"),
+  apiWindow: el_("api-window"),
+  apiLead: el_("api-lead"),
+  apiList: el_("api-list"),
+  apiFeed: el_("api-feed"),
+  apiFeedLead: el_("api-feed-lead"),
+  apiCalls: el_("api-calls"),
+  detailApiBlock: el_("detail-api-block"),
+  detailApiLead: el_("detail-api-lead"),
+  detailApiCalls: el_("detail-api-calls"),
   zoneSelect: el_("zone-select"),
   zoneMapNote: el_("zone-map-note"),
   changeBanner: el_("change-banner"),
@@ -947,6 +1010,10 @@ function renderList(force) {
     state.view !== "live" || offlineEmpty;
   ui.emptyState.querySelector("[data-empty-history]").hidden = state.view === "live";
   ui.emptyState.querySelector("[data-empty-offline]").hidden = !offlineEmpty;
+  // The hosted copy has no backend to reach by default, which is a
+  // different situation from a dispatcher whose backend just went down.
+  ui.emptyState.querySelector("[data-empty-hosted]").hidden =
+    !offlineEmpty || !IS_HOSTED;
 
   const sorted = [...trips].sort((a, b) => {
     if (state.view === "history") {
@@ -1409,6 +1476,26 @@ function renderDecisionRecord(container, text) {
 
 let detailOpenerEl = null;
 
+/** The open panel's address. A dispatcher handing a crossing to a
+ *  colleague, or to a shift that starts in an hour, has had one way to do
+ *  it — "Copy handoff brief", which produces text. This produces the
+ *  screen: paste the URL and the other person is looking at the same trip
+ *  rather than hunting for a name in a queue that has re-sorted since.
+ *
+ *  Written with replaceState, not pushState: the panel is a view of a row,
+ *  not a navigation step, and stacking history entries would turn Back
+ *  into "close the panel I opened three trips ago". */
+function syncHash(tripId) {
+  const want = tripId ? `#trip/${encodeURIComponent(tripId)}` : "";
+  if ((location.hash || "") === want) return;
+  history.replaceState(null, "", location.pathname + location.search + want);
+}
+
+function tripIdFromHash() {
+  const m = /^#trip\/(.+)$/.exec(location.hash || "");
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 async function openDetail(tripId) {
   detailOpenerEl = document.activeElement;
   state.selectedTripId = tripId;
@@ -1421,6 +1508,7 @@ async function openDetail(tripId) {
     ui.detailPanel.hidden = false;
     ui.scrim.hidden = false;
     ui.detailClose.focus();
+    syncHash(tripId);
   } catch (e) {
     console.error("failed to load trip detail", e);
     announce("Could not load trip detail.", false);
@@ -1432,7 +1520,7 @@ async function openDetail(tripId) {
  *  A dispatcher reading a position to a search team over a radio needs it
  *  short; one pasting it into a mapping tool needs it exact. Five decimal
  *  places is both. */
-function fillCoordField(dd, value) {
+function fillCoordField(dd, value, note) {
   while (dd.firstChild) dd.removeChild(dd.firstChild);
   if (!value) {
     dd.textContent = "—";
@@ -1463,6 +1551,7 @@ function fillCoordField(dd, value) {
   });
   wrap.appendChild(btn);
   dd.appendChild(wrap);
+  if (note) dd.appendChild(el("p", "coord-note", note));
 }
 
 // -- the fields that go stale under an open panel ----------------------------
@@ -1532,13 +1621,29 @@ function fillDetail(trip) {
   const entry = formatCoords(trip.entry_point);
   const lastKnown = formatCoords(trip.last_known_location);
   const sameFix = entry !== null && entry === lastKnown;
-  fillCoordField(ui.detailEntry, entry);
+  const offBy = fixOffCorridorKm(trip, entry);
+  fillCoordField(
+    ui.detailEntry, entry,
+    offBy
+      ? `This fix is ${offBy.toLocaleString()} km from the corridor's gates — ` +
+        "not a position to search. The Nokia sandbox's shared simulator " +
+        "device reports a fixed European location whichever zone is armed; " +
+        "on a live operator line the same reading would mean the wrong " +
+        "MSISDN. The map below plots elapsed time along the corridor, not " +
+        "this coordinate."
+      : undefined
+  );
   setText(
     ui.detailEntryLabel,
     sameFix ? "Entry point — also the last known fix" : "Entry point"
   );
   ui.detailLastKnownRow.hidden = sameFix;
-  if (!sameFix) fillCoordField(ui.detailLastKnown, lastKnown);
+  if (!sameFix) {
+    fillCoordField(
+      ui.detailLastKnown, lastKnown,
+      fixOffCorridorKm(trip, lastKnown) ? "Same sandbox caveat as above." : undefined
+    );
+  }
 
   fillDetailPredicted(trip);
 
@@ -1596,6 +1701,27 @@ function fillDetail(trip) {
   } else {
     ui.detailEscalationBlock.hidden = true;
   }
+
+  // Provenance. Present only on /dashboard/trips/{id} — the queue poll
+  // does not carry it, so on a refresh from the queue the list already on
+  // screen is left alone rather than being blanked.
+  if (Array.isArray(trip.api_calls)) {
+    const camara = trip.api_calls.filter((c) => c.camara);
+    setText(
+      ui.detailApiLead,
+      camara.length
+        ? `${camara.length} call${camara.length === 1 ? "" : "s"} to ${
+            new Set(camara.map((c) => c.api)).size
+          } CAMARA API${new Set(camara.map((c) => c.api)).size === 1 ? "" : "s"}`
+        : "none recorded"
+    );
+    renderApiCallList(
+      ui.detailApiCalls,
+      trip.api_calls,
+      "No CAMARA calls attributed to this crossing."
+    );
+  }
+  ui.detailApiBlock.open = false;
 
   ui.detailHandoff.onclick = () => copyHandoff(trip);
   resetResolveButton(trip);
@@ -1831,6 +1957,7 @@ function closeDetail() {
     detailOpenerEl.focus();
   }
   detailOpenerEl = null;
+  syncHash(null);
 }
 
 ui.detailClose.addEventListener("click", closeDetail);
@@ -1980,6 +2107,167 @@ function renderShortcutHint() {
 
 // -- polling ------------------------------------------------------------------
 
+// -- network API activity ----------------------------------------------------
+//
+// What the queue above is actually made of. See api_activity.py for why
+// this is on the operator console and not only on the demo page.
+
+// One poll of /dashboard/api-activity per this many queue polls. The call
+// log is a thing a dispatcher consults, not a thing they watch, and it
+// reads a 24-hour window rather than a handful of live rows.
+const API_EVERY = 3;
+let apiPollCounter = 0;
+
+/** Backend timestamps are naive UTC by convention (see clock.py), and the
+ *  only reason the rest of this file gets away with `new Date(iso)` is
+ *  that it always subtracts two backend timestamps, so the browser's
+ *  offset cancels. These are compared against Date.now() instead — a real
+ *  wall-clock instant, because an HTTP call to Nokia happens at one and
+ *  /demo/clock/advance cannot move it — so the zone has to be stated. */
+function parseUtc(iso) {
+  if (!iso) return null;
+  return new Date(/[Zz]|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + "Z");
+}
+
+function agoText(iso) {
+  const d = parseUtc(iso);
+  if (!d || Number.isNaN(d.getTime())) return "";
+  const secs = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  return `${Math.round(secs / 3600)}h ago`;
+}
+
+/** One call, as a row. Every string here comes from the backend, so all of
+ *  it goes in through textContent — see el(). */
+function apiCallRow(call) {
+  const li = el("li", "api-call");
+  // Three outcomes. A rejected call is a fault; a call that never got a
+  // response is a fault of a different kind; a channel that was never
+  // configured is not a fault at all, and colouring it like one trains a
+  // dispatcher to ignore the colour.
+  const skipped = call.attempted === false;
+  if (!call.ok && !skipped) li.classList.add("is-failed");
+  if (skipped) li.classList.add("is-skipped");
+  li.appendChild(
+    el(
+      "span", "api-call-status",
+      skipped ? "SKIP" : call.status ? String(call.status) : "ERR"
+    )
+  );
+  li.appendChild(el("span", "api-call-method", call.method || ""));
+  const path = el("span", "api-call-path");
+  path.appendChild(el("span", "api-call-api", call.api));
+  path.appendChild(document.createTextNode(call.path || ""));
+  li.appendChild(path);
+  li.appendChild(
+    el("span", "api-call-meta", `${call.latency_ms} ms · ${agoText(call.ts)}`)
+  );
+  return li;
+}
+
+function renderApiCallList(container, calls, emptyText) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+  if (!calls || !calls.length) {
+    container.appendChild(el("li", "record-empty", emptyText));
+    return;
+  }
+  calls.forEach((c) => container.appendChild(apiCallRow(c)));
+}
+
+function renderApiChip(data) {
+  const t = data && data.totals;
+  if (!t) {
+    ui.apiChip.className = "api-chip";
+    setText(ui.apiChipText, "CAMARA —");
+    return;
+  }
+  // Three states worth distinguishing, and "no calls yet" is not a fault:
+  // a console opened before the first crossing of the day has nothing to
+  // report and should not claim a problem.
+  const cls = t.failed > 0 ? (t.ok === 0 ? "is-down" : "is-degraded") : t.calls ? "is-ok" : "";
+  ui.apiChip.className = "api-chip" + (cls ? " " + cls : "");
+  setText(
+    ui.apiChipText,
+    t.calls
+      ? `CAMARA ${t.calls} calls · ${t.apis_used}/${t.apis_total} APIs` +
+          (t.failed ? ` · ${t.failed} failed` : "")
+      : "CAMARA idle"
+  );
+}
+
+function renderApiActivity() {
+  const data = state.apiActivity;
+  renderApiChip(data);
+  if (!data) {
+    setText(ui.apiLead, "No reading — this console is not in contact with the backend.");
+    while (ui.apiList.firstChild) ui.apiList.removeChild(ui.apiList.firstChild);
+    return;
+  }
+  setText(ui.apiWindow, `last ${data.window_hours}h`);
+  const t = data.totals;
+  setText(
+    ui.apiLead,
+    t.calls
+      ? `${t.calls} live CAMARA calls on Nokia Network as Code · ${t.failed} failed · ` +
+        `${t.apis_used} of ${t.apis_total} APIs exercised`
+      : "No CAMARA calls in this window. The five APIs below are the ones this corridor runs on."
+  );
+
+  while (ui.apiList.firstChild) ui.apiList.removeChild(ui.apiList.firstChild);
+  data.apis.forEach((a) => {
+    const li = el("li", "api-row");
+    li.classList.add(
+      a.failed ? "is-failed" : a.calls - (a.skipped || 0) ? "is-ok" : "is-idle"
+    );
+    li.appendChild(el("span", "api-pip"));
+    const name = el("span", "api-name", a.api);
+    name.appendChild(el("span", "api-spec", a.camara_spec || a.category));
+    li.appendChild(name);
+    const count = el("span", "api-count");
+    if (a.calls) {
+      const attempted = a.calls - (a.skipped || 0);
+      count.appendChild(
+        document.createTextNode(
+          attempted
+            ? `${attempted} call${attempted === 1 ? "" : "s"}` +
+              (a.avg_ms != null ? ` · ${a.avg_ms} ms` : "")
+            : ""
+        )
+      );
+      if (a.failed) count.appendChild(el("span", "api-fail", `${attempted ? " · " : ""}${a.failed} failed`));
+      if (a.skipped) {
+        count.appendChild(
+          el("span", "api-skip", `${attempted || a.failed ? " · " : ""}${a.skipped} not sent`)
+        );
+      }
+    } else {
+      count.appendChild(document.createTextNode("not called yet"));
+    }
+    li.appendChild(count);
+    ui.apiList.appendChild(li);
+  });
+
+  setText(
+    ui.apiFeedLead,
+    data.calls.length ? `${data.calls.length} most recent` : "nothing logged yet"
+  );
+  renderApiCallList(
+    ui.apiCalls, data.calls, "No calls logged in this window."
+  );
+}
+
+async function pollApiActivity() {
+  try {
+    state.apiActivity = await api("/dashboard/api-activity?limit=25");
+  } catch (e) {
+    // A failed poll here is not the same as an idle network layer, and
+    // must not be drawn as one.
+    state.apiActivity = null;
+  }
+  renderApiActivity();
+}
+
 function renderFreshness() {
   if (!state.lastPollAt) {
     setText(ui.lastUpdated, "—");
@@ -2010,6 +2298,7 @@ async function pollTrips() {
     renderTripMarkers();
     // The open panel is a view onto this same data and has to move with it.
     refreshOpenDetail();
+    if (apiPollCounter++ % API_EVERY === 0) pollApiActivity();
   } catch (e) {
     state.lastPollOk = false;
     ui.liveIndicator.classList.add("stale");
@@ -2097,6 +2386,20 @@ async function bootstrap() {
   markSeen();
   state.bootstrapped = true;
   if (!document.hidden) startPolling();
+  // A link straight to one crossing. Deliberately after the first poll:
+  // the panel is a view of a row, so the queue has to exist first.
+  const deepLink = tripIdFromHash();
+  if (deepLink) await openDetail(deepLink);
 }
+
+// A pasted link arriving at a console that is already open is a same-
+// document navigation: nothing reloads, so without this the address bar
+// would change and the screen would not.
+window.addEventListener("hashchange", () => {
+  if (!state.bootstrapped) return;
+  const id = tripIdFromHash();
+  if (id && id !== state.selectedTripId) openDetail(id);
+  else if (!id && !ui.detailPanel.hidden) closeDetail();
+});
 
 bootstrap();
