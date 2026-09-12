@@ -8,6 +8,48 @@ import 'geo_utils.dart';
 
 enum GateEvent { entryReached, exitReached, none }
 
+/// Why positions have stopped arriving.
+///
+/// The position stream used to be listened to with no `onError`, so the
+/// first error on it — geolocator throws
+/// `LocationServiceDisabledException` the moment the OS location toggle
+/// goes off, and platform errors are possible at any time — became an
+/// unhandled Dart exception **and ended the subscription**. Nothing
+/// restarted it. Positions then stopped for the remainder of the session,
+/// and the screen that exists precisely because the network cannot help —
+/// the offline map — sat on "Locating…" indefinitely with no way for the
+/// traveller to know that the thing they were waiting for was never going
+/// to arrive.
+///
+/// Reproduced on an Android 16 emulator inside a live crossing: one
+/// `Unhandled Exception: The location service on the device is disabled`
+/// in the log, and the dot never moved again.
+///
+/// So errors are now handled, classified, retried, and — this is the part
+/// that matters — *reportable*, because a safety screen that cannot say
+/// what it does not know is the failure mode this whole product is a
+/// reaction to.
+enum LocationFault {
+  /// The OS location toggle is off. Recoverable by the traveller, and the
+  /// only fault this app can actually ask them to fix.
+  serviceDisabled,
+
+  /// Permission was revoked after setup — from the OS settings, or by
+  /// Android's auto-revoke on an app that has not been opened for months,
+  /// which is the normal state of this app by design.
+  permissionDenied,
+
+  /// Anything else the platform raised. Retried like the others; not
+  /// explained to the traveller beyond "not available", because guessing
+  /// at a cause would be worse than admitting there isn't one.
+  unavailable,
+}
+
+/// How long to wait before trying the stream again after a fault. A fault
+/// here is nearly always a toggle a person flips, so this is tuned for
+/// "notice quickly when they flip it back" rather than for backoff.
+const Duration kLocationRetryDelay = Duration(seconds: 10);
+
 /// How hard the GPS is being driven right now.
 ///
 /// This exists because the previous version ran [LocationAccuracy.high]
@@ -43,6 +85,31 @@ class LocationService {
 
   final _controller = StreamController<Position>.broadcast();
   Stream<Position> get positions => _controller.stream;
+
+  /// Null while positions are arriving; set when they have stopped and why.
+  /// See [LocationFault].
+  LocationFault? fault;
+
+  final _faults = StreamController<LocationFault?>.broadcast();
+  Stream<LocationFault?> get faults => _faults.stream;
+
+  Timer? _retry;
+
+  static LocationFault _classify(Object error) {
+    if (error is LocationServiceDisabledException) {
+      return LocationFault.serviceDisabled;
+    }
+    if (error is PermissionDeniedException) {
+      return LocationFault.permissionDenied;
+    }
+    return LocationFault.unavailable;
+  }
+
+  void _setFault(LocationFault? next) {
+    if (fault == next) return;
+    fault = next;
+    if (!_faults.isClosed) _faults.add(next);
+  }
 
   Future<bool> requestPermission() async {
     final status = await Permission.locationAlways.request();
@@ -96,8 +163,14 @@ class LocationService {
         locationSettings: _settingsFor(_mode),
       );
       last = pos;
+      _setFault(null);
       return pos;
-    } catch (_) {
+    } catch (error) {
+      // Still returns null — the caller's contract is unchanged — but the
+      // reason is no longer thrown away. This used to be a bare
+      // `catch (_) { return null; }`, which is how a phone with location
+      // switched off produced a screen that said "Locating…" forever.
+      _setFault(_classify(error));
       return null;
     }
   }
@@ -105,12 +178,48 @@ class LocationService {
   void startTracking({GpsMode mode = GpsMode.idle}) {
     if (_sub != null && mode == _mode) return;
     _mode = mode;
+    _retry?.cancel();
     _sub?.cancel();
     _sub = Geolocator.getPositionStream(
       locationSettings: _settingsFor(mode),
-    ).listen((pos) {
-      last = pos;
-      _controller.add(pos);
+    ).listen(
+      (pos) {
+        last = pos;
+        _setFault(null);
+        _controller.add(pos);
+      },
+      // A stream error ends the subscription — geolocator will not deliver
+      // another fix on it, ever. Without this handler that also crashed
+      // out as an unhandled exception. Both halves matter: handle it, and
+      // then actually rebuild the subscription, because the commonest
+      // cause is a toggle the traveller can flip back on.
+      onError: (Object error) {
+        _setFault(_classify(error));
+        _sub?.cancel();
+        _sub = null;
+        _scheduleRetry();
+      },
+      // A stream that completes on its own (some platform implementations
+      // close rather than error) leaves the same silence behind.
+      onDone: () {
+        _sub = null;
+        _scheduleRetry();
+      },
+      cancelOnError: true,
+    );
+  }
+
+  void _scheduleRetry() {
+    _retry?.cancel();
+    if (_faults.isClosed) return;
+    _retry = Timer(kLocationRetryDelay, () {
+      if (_faults.isClosed) return;
+      // startTracking() short-circuits when a subscription for this mode
+      // already exists, and there is none — the error path cleared it.
+      startTracking(mode: _mode);
+      // An immediate one-shot read alongside it, so recovery does not have
+      // to wait for the traveller to move the distanceFilter's worth.
+      currentPosition();
     });
   }
 
@@ -146,6 +255,8 @@ class LocationService {
   }
 
   void stopTracking() {
+    _retry?.cancel();
+    _retry = null;
     _sub?.cancel();
     _sub = null;
   }
@@ -172,7 +283,9 @@ class LocationService {
   }
 
   void dispose() {
+    _retry?.cancel();
     _sub?.cancel();
     _controller.close();
+    _faults.close();
   }
 }

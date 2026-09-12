@@ -53,6 +53,11 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   bool _showReconnection = false;
   Position? _position;
 
+  /// Why there is no position, when there isn't one. The offline map is
+  /// the only screen that can act on this, and it is the screen where it
+  /// matters — see LocationService.LocationFault.
+  LocationFault? _locationFault;
+
   /// The emergency contact's own name, for the screens that talk about
   /// them. See [_displayContactName]. Resolved once here rather than read
   /// per build: StorageService.contacts re-decodes JSON on every access,
@@ -91,6 +96,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   Timer? _tickTimer;
   StreamSubscription<List<ConnectivityResult>>? _connSub;
   StreamSubscription<Position>? _posSub;
+  StreamSubscription<LocationFault?>? _faultSub;
 
   // The state that was on screen last frame, so a *transition* into a
   // crossing can fire haptics once instead of on every poll.
@@ -161,6 +167,10 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     // The position stream only delivers *new* fixes — ask for the current
     // one immediately too, or the offline map sits on "Locating…" until
     // the next GPS update happens to fire, which can be a long wait.
+    _faultSub = widget.location.faults.listen((f) {
+      if (!mounted) return;
+      setState(() => _locationFault = f);
+    });
     widget.location.currentPosition().then((p) {
       if (mounted && p != null) {
         setState(() => _position = p);
@@ -195,6 +205,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     _tickTimer?.cancel();
     _connSub?.cancel();
     _posSub?.cancel();
+    _faultSub?.cancel();
     widget.location.stopTracking();
     _notice.clear();
     _tick.dispose();
@@ -406,6 +417,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
       body = OfflineMapScreen(
         zone: _zone,
         position: _position,
+        locationFault: _locationFault,
         trip: _trip,
         tick: _tick,
         // The theme control has to come with this screen. Once the radio is

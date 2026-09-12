@@ -12,7 +12,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:signalguard/models/trip.dart';
+import 'package:signalguard/models/zone.dart';
 import 'package:signalguard/screens/approach_screen.dart';
+import 'package:signalguard/screens/offline_map_screen.dart';
+import 'package:signalguard/services/location_service.dart';
 import 'package:signalguard/theme/app_theme.dart';
 import 'package:signalguard/widgets/decision_record_view.dart';
 
@@ -50,6 +53,18 @@ Trip _trip({
     batteryAtEntry: 18,
   );
 }
+
+const _zone = Zone(
+  zoneId: 'JO-H15-MUDAWWARA',
+  label: 'Highway 15 — Desert Highway, Al Mudawwara approach',
+  entryLat: 29.832,
+  entryLon: 35.991,
+  exitLat: 29.335,
+  exitLon: 36.024,
+  gateRadiusM: 8000,
+  corridorKm: 104,
+  nominalCrossingMin: 75,
+);
 
 Widget _host(Widget child, {Brightness brightness = Brightness.dark}) {
   return MaterialApp(
@@ -133,7 +148,7 @@ void main() {
       expect(find.text('WHY'), findsNothing);
 
       await tester.tap(find.text('Why this long?'));
-      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 50));
 
       expect(find.text('Hide the reasoning'), findsOneWidget);
       expect(find.text('WHY'), findsOneWidget);
@@ -207,6 +222,66 @@ void main() {
       expect(find.textContaining('offline map'), findsWidgets);
       expect(find.textContaining('downloading'), findsNothing);
       expect(find.textContaining('Downloading'), findsNothing);
+    });
+  });
+
+  // The offline map is the whole app once the radio is dark, and the one
+  // number on it that can go missing is the traveller's own position. What
+  // it says while that number is missing is the difference between a wait
+  // and a dead end.
+  group('offline map with no position fix', () {
+    testWidgets('says "Locating" only while a fix is genuinely pending',
+        (tester) async {
+      await tester.pumpWidget(
+        _host(const OfflineMapScreen(zone: _zone, trip: null)),
+      );
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.text('Locating…'), findsOneWidget);
+      expect(
+        find.textContaining('Your position works without signal'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('names the switch the traveller can actually flip',
+        (tester) async {
+      await tester.pumpWidget(
+        _host(const OfflineMapScreen(
+          zone: _zone,
+          locationFault: LocationFault.serviceDisabled,
+        )),
+      );
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // The bug this replaced: "Locating…" forever, describing a wait that
+      // would never end, with no mention of the toggle that ends it.
+      expect(find.text('Locating…'), findsNothing);
+      expect(find.text('Location is switched off on this phone'),
+          findsOneWidget);
+      // And it must stop promising a position it does not have.
+      expect(
+        find.textContaining('Your position works without signal'),
+        findsNothing,
+      );
+      expect(
+        find.textContaining('The map and the countdown above still work'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a revoked permission is not the same message as a toggle',
+        (tester) async {
+      await tester.pumpWidget(
+        _host(const OfflineMapScreen(
+          zone: _zone,
+          locationFault: LocationFault.permissionDenied,
+        )),
+      );
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.text('SignalGuard is not allowed to use location'),
+          findsOneWidget);
     });
   });
 

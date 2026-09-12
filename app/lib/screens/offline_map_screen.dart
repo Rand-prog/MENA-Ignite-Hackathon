@@ -5,6 +5,7 @@ import '../models/corridor_map.dart';
 import '../models/trip.dart';
 import '../models/zone.dart';
 import '../services/geo_utils.dart';
+import '../services/location_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/corridor_painter.dart';
 import '../widgets/map_viewport.dart';
@@ -20,6 +21,15 @@ import 'approach_screen.dart'
 class OfflineMapScreen extends StatefulWidget {
   final Zone? zone;
   final Position? position;
+
+  /// Why there is no position, when there isn't one.
+  ///
+  /// "Locating…" is the right thing to say for the few seconds a fix takes.
+  /// It is the wrong thing to say when location is switched off, because it
+  /// describes a wait that will never end and hides the one action the
+  /// traveller could take. This screen is the whole app once the radio is
+  /// dark; it has to be able to say which of the two it is.
+  final LocationFault? locationFault;
 
   /// Last known trip state, kept from before the radio went dark.
   ///
@@ -58,6 +68,7 @@ class OfflineMapScreen extends StatefulWidget {
     super.key,
     this.zone,
     this.position,
+    this.locationFault,
     this.trip,
     this.tick,
     this.themeMode = ThemeMode.dark,
@@ -251,6 +262,7 @@ class _OfflineMapScreenState extends State<OfflineMapScreen> {
                         bearing: bearing,
                         distanceKm: distanceToNearestKm,
                         targetIsExit: targetIsExit,
+                        locationFault: widget.locationFault,
                       ),
                     ],
                     // Was a Spacer, which is unbounded inside a scroll view
@@ -264,9 +276,15 @@ class _OfflineMapScreenState extends State<OfflineMapScreen> {
                               'network.'
                           // No bearing, no arrow — telling someone to follow
                           // one that is not on screen is worse than saying
-                          // less.
-                          : 'Your position works without signal — this '
-                              'screen needs nothing from the network.',
+                          // less. And with location off there is no position
+                          // either, so the reassurance below would be a
+                          // claim about something that is not happening.
+                          : widget.locationFault != null
+                              ? 'The map and the countdown above still work '
+                                  'without signal. Your own position does '
+                                  'not, until location is available again.'
+                              : 'Your position works without signal — this '
+                                  'screen needs nothing from the network.',
                       style: TextStyle(color: c.textMuted, height: 1.5),
                     ),
                   ],
@@ -293,15 +311,35 @@ class _OfflineMapScreenState extends State<OfflineMapScreen> {
 /// The dial is a north-up map bearing, not a turn to make, so it carries the
 /// compass point and degrees in writing and an "N" reference on the dial
 /// itself (see BearingArrow).
+/// What to say in place of a distance when there is no fix.
+///
+/// "Locating…" is honest for the first few seconds and a lie after that.
+/// Each of these names a state the traveller can reason about, and the two
+/// they can act on say what the action is.
+String _noFixText(LocationFault? fault) {
+  switch (fault) {
+    case LocationFault.serviceDisabled:
+      return 'Location is switched off on this phone';
+    case LocationFault.permissionDenied:
+      return 'SignalGuard is not allowed to use location';
+    case LocationFault.unavailable:
+      return 'Position not available on this phone right now';
+    case null:
+      return 'Locating…';
+  }
+}
+
 class _DirectionBlock extends StatelessWidget {
   final double? bearing;
   final double? distanceKm;
   final bool targetIsExit;
+  final LocationFault? locationFault;
 
   const _DirectionBlock({
     required this.bearing,
     required this.distanceKm,
     required this.targetIsExit,
+    this.locationFault,
   });
 
   @override
@@ -314,7 +352,7 @@ class _DirectionBlock extends StatelessWidget {
         ? (targetIsExit
             ? '${km.toStringAsFixed(1)} km to the EXIT gate'
             : '${km.toStringAsFixed(1)} km back to the ENTRY gate')
-        : 'Locating…';
+        : _noFixText(locationFault);
     final compass =
         b == null ? null : '${compassPoint(b)} · ${_degrees(b)}°';
 
