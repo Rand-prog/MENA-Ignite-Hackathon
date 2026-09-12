@@ -12,6 +12,11 @@ import pytest_asyncio
 _tmp_db = Path(tempfile.gettempdir()) / "signalguard_test.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_tmp_db.as_posix()}"
 os.environ.setdefault("SIGNALGUARD_DEMO_MODE", "true")
+# Hard override, not a default: this is a demo aid that sleeps on every
+# zone entry, and a developer who left it set in backend/.env to record the
+# app's approach screen should not discover it by watching the suite take
+# twenty minutes. Env vars beat the .env file in pydantic-settings.
+os.environ["SIGNALGUARD_DEMO_BUFFER_HOLD_SEC"] = "0"
 os.environ.setdefault("NAC_API_KEY", "")
 os.environ.setdefault("GOOGLE_API_KEY", "")  # forces the deterministic fallback by default
 

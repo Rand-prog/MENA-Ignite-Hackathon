@@ -11,13 +11,14 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import state_machine as sm
 from ..clock import clock
 from ..config import settings
 from ..db import SessionLocal, get_session, reset_db
-from ..models import ApiLogEntry, Trip, Zone
+from ..models import ApiLogEntry, Traveller, Trip, Zone
 from ..nac_singleton import nac_client
 from ..runtime_state import runtime_state
 from ..whatsapp_singleton import whatsapp_client
@@ -78,10 +79,27 @@ async def demo_reset():
 
 @router.post("/demo/travellers")
 async def demo_travellers(body: TravellerIn, session: AsyncSession = Depends(get_session)):
-    traveller = await sm.create_traveller(
-        session, msisdn=body.msisdn, name=body.name,
-        contacts=[c.model_dump() for c in body.contacts],
-    )
+    try:
+        traveller = await sm.create_traveller(
+            session, msisdn=body.msisdn, name=body.name,
+            contacts=[c.model_dump() for c in body.contacts],
+        )
+    except IntegrityError:
+        # msisdn is unique, and registering the same number twice is a
+        # normal thing to do here: the app onboards with a number, then a
+        # seeding script or the demo panel addresses the same traveller
+        # from the other side. `POST /travellers` already re-attaches in
+        # demo mode (real.py) rather than bouncing; this path did not, and
+        # surfaced the raw constraint violation as a 500 with a SQLAlchemy
+        # traceback. Same behaviour, same reason — the whole point of a
+        # demo-only surface is that the identity is shared.
+        await session.rollback()
+        result = await session.execute(
+            select(Traveller).where(Traveller.msisdn == body.msisdn)
+        )
+        traveller = result.scalar_one_or_none()
+        if traveller is None:  # pragma: no cover — lost a race with a delete
+            raise HTTPException(409, "msisdn is taken but its traveller is gone")
     # auth_token is additive (run_demo.py reads traveller_id only). The
     # dashboard's demo panel needs it to call the traveller-authenticated
     # endpoints — /travellers/me/tier0-response above all, which is the
