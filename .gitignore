@@ -42,8 +42,16 @@ Thumbs.db
 .vscode/
 .idea/
 
-# reference docs — not published to this repo
-docs/
+# Reference docs are third-party or internal and are not published to this
+# repo — but docs/screenshots/ is a deliverable (every image in the pitch
+# deck, taken from the running build), so it ships. A trailing-slash
+# ignore would stop git descending into docs/ at all, and the negation
+# below would never be consulted; `docs/*` is what makes it work.
+docs/*
+!docs/screenshots/
 
 # stale duplicate of scripts/run_demo.py, kept locally only
 demo script/
+
+# submission archive — built from this tree, never part of it
+SignalGuard_source.zip

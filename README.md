@@ -334,14 +334,123 @@ Polling pauses on a hidden tab. Static assets carry a `?v=` query — with no
 build step, a browser silently running a previous build of `app.js` while
 the disk had the current one cost real debugging time.
 
+## What was added for the Prototype Phase submission
+
+### The console shows the CAMARA calls it runs on
+
+`api_log` has held one row per real Nokia call since the first build, but
+the only reader was `/demo/api-log` — mounted only when
+`SIGNALGUARD_DEMO_MODE=true`. So the one screen an operator actually
+watches could not say whether the five APIs the whole product depends on
+were answering at all.
+
+That is an operational hole, not a presentation one. This console's queue
+is not filled by anything it owns: a trip appears because a Geofencing
+notification arrived, its risk numbers exist because Congestion Insights
+and Location Retrieval answered, and its alarm is timed against a
+reachability signal. When one of those starts returning 4xx the queue does
+not turn red — it goes *quiet*, which on this screen is indistinguishable
+from a calm corridor.
+
+`GET /dashboard/api-activity` (`backend/app/api_activity.py`) is mounted in
+every build and serves two views: a per-API roll-up, and the recent call
+feed. The console renders a counter in the top bar, a panel under the
+corridor stats, and — per trip — the exact requests behind the numbers in
+that trip's detail panel.
+
+Per-trip attribution needed one new thing. `NokiaClient._call` is given an
+API name, a method and a path and knows nothing else, deliberately, so the
+trip is carried in a `ContextVar` set at the tool boundary
+(`agent/tools.py`'s `_on_behalf_of_trip`). The tool layer is the right
+place: a single tool can fan out into more than one request, and each lands
+in `api_log` separately.
+
+Three outcomes, not two. A negative status now means "never attempted" —
+today that is a contact message with no SMS gateway configured — and the
+console draws it as `SKIP`, not as a failure. `whatsapp_client` used to log
+those as status 0, which is the marker for "the request went out and got no
+response". On an emergency console, "we did not try" and "we tried and
+failed" call for opposite actions.
+
+`tests/test_api_activity.py` drives `_call` for real through a
+`MockTransport` rather than stubbing above it, because the logging happens
+*inside* `_call` — a test that stubbed the client's methods would assert
+nothing about the thing it claims to cover.
+
+### A network fix that cannot be where the traveller is
+
+The sandbox's shared simulator device reports a fixed European location
+whichever zone is armed, so a trip's "last known fix" was a coordinate in
+Hungary printed under a Jordanian corridor with no comment. On a live
+operator line the same reading would mean a mis-provisioned line or the
+wrong MSISDN. Either way it is not a position to search.
+
+The console now measures the fix against the corridor's own gates and, past
+50 km, says what it is looking at instead of handing a search team a number
+nobody should drive to. The map was always plotting elapsed time along the
+corridor rather than that coordinate; now the panel says so too.
+
+### The app's position stream died silently on its first error
+
+`LocationService` listened to `Geolocator.getPositionStream` with no
+`onError`. Geolocator throws `LocationServiceDisabledException` the moment
+the OS location toggle goes off, and platform errors are possible at any
+time — so the first error became an unhandled Dart exception **and ended
+the subscription**. Nothing restarted it. Positions then stopped for the
+rest of the session, and the offline map — the screen that exists precisely
+because the network cannot help — sat on "Locating…" indefinitely, with no
+way for the traveller to know that what they were waiting for was never
+going to arrive.
+
+Reproduced on an Android 16 emulator inside a live crossing: one
+`Unhandled Exception: The location service on the device is disabled` in
+the log, and the dot never moved again.
+
+Errors are now handled, classified (`LocationFault`), retried every 10
+seconds — the commonest cause is a toggle a person can flip back — and,
+the part that matters, *reportable*. The offline map names the switch when
+there is one to name, and stops promising that "your position works without
+signal" while it does not. `currentPosition()` no longer swallows the reason
+either.
+
+### Smaller things
+
+- **A trip has an address.** `#trip/<id>` opens that crossing's panel, so a
+  dispatcher handing one to a colleague can send the screen rather than a
+  description of it. Written with `replaceState`, because the panel is a
+  view of a row and not a navigation step.
+- **`POST /demo/travellers` is idempotent.** `POST /travellers` already
+  re-attached to an existing msisdn in demo mode; this path did not, and
+  surfaced the raw unique-constraint violation as a 500 with a SQLAlchemy
+  traceback. Registering the same number twice is normal here — the app
+  onboards with one, then a script addresses the same traveller from the
+  other side.
+- **`scripts/seed_console.py`** walks four crossings through the demo
+  primitives so a reviewer gets a populated triage queue in one command. It
+  is not a scenario runner; `run_demo.py` still owns those, and its contract
+  is still frozen.
+- **The suite ignores a local demo aid.** `SIGNALGUARD_DEMO_BUFFER_HOLD_SEC`
+  sleeps on every zone entry, and a developer who left it set in `.env` to
+  record the approach screen should not find out by watching `pytest` take
+  twenty minutes. `conftest.py` overrides it to 0.
+- **A 4px sliver of accent green** sat at the top-left of the console on
+  every page load: the skip link's `translateY(-120%)` did not clear its own
+  box. Both dashboard pages also carry a favicon now, instead of a 404.
+- **`docs/screenshots/`** ships in the repo. Every image in the pitch deck
+  is a screenshot of the running build; `docs/` is otherwise ignored because
+  it holds third-party reference PDFs.
+
 ## Repo layout
 
 ```
+REVIEWERS.md how to run all of it, for somebody who has never seen it
 backend/     FastAPI + LangGraph agent — Components 1 & 2
 app/         Flutter traveller app — Component 3
 dashboard/   emergency-centre web app — Component 4 (vanilla HTML/CSS/JS)
-scripts/     run_demo.py — demo conductor (do not modify its contract)
+scripts/     run_demo.py     — demo conductor (do not modify its contract)
+             seed_console.py — fill the console's queue in one command
 docs/        product/technical/security/user-flow reference docs
+docs/screenshots/  every image in the pitch deck, from the running build
 ```
 
 ## Running the dashboard
