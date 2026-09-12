@@ -26,6 +26,10 @@ from .config import settings
 
 LogFn = Callable[[dict[str, Any]], Awaitable[None]]
 
+# Sentinel status for a send that was never attempted, as opposed to one
+# that was attempted and got no response (0) or was rejected (4xx/5xx).
+NOT_ATTEMPTED = -1
+
 
 class WhatsAppClient:
     def __init__(self, log_fn: LogFn | None = None) -> None:
@@ -49,9 +53,18 @@ class WhatsAppClient:
             # No credentials configured — log it as a no-op rather than
             # silently dropping it or crashing the trip flow over a
             # notification channel that was never wired up.
+            #
+            # status=-1, not 0. Zero is this system's marker for "the
+            # request went out and never got an HTTP response" (see
+            # nokia_client._call), and "we tried to reach a contact and
+            # failed" is not the same fact as "this build has no SMS
+            # gateway wired up" — on an emergency console those two call
+            # for opposite actions. NOT_ATTEMPTED keeps them apart; the
+            # operator console renders it as SKIP rather than as a failure
+            # (api_activity.py).
             await self._log(
                 endpoint=f"POST (skipped, no Twilio creds) -> {to}",
-                latency_ms=0, status=0, cost_usd=0.0,
+                latency_ms=0, status=NOT_ATTEMPTED, cost_usd=0.0,
             )
             return {"sent": False, "reason": "twilio not configured"}
 

@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
-from .. import convoy, corridor_stats, coverage
+from .. import api_activity, convoy, corridor_stats, coverage
 from .. import state_machine as sm
 from ..config import settings
 from ..db import get_session
@@ -374,6 +374,26 @@ async def dashboard_zone_stats(zone_id: str, session: AsyncSession = Depends(get
     return await corridor_stats.zone_summary(session, zone_id=zone_id)
 
 
+@router.get("/dashboard/api-activity")
+async def dashboard_api_activity(
+    limit: int = 40, hours: int = 24, session: AsyncSession = Depends(get_session)
+):
+    """The CAMARA call layer this console's queue is actually made of.
+
+    Not a demo aid — `/demo/api-log` is that, and it is mounted only in
+    demo mode. This is the operational view: every trip on this screen
+    exists because a Geofencing notification arrived, and every number in
+    its detail panel came out of Congestion Insights, Location Retrieval or
+    a reachability check. When one of those five APIs starts failing the
+    queue does not turn red, it goes quiet — which on a screen whose whole
+    job is telling somebody whether a corridor is calm looks exactly like a
+    calm corridor. See api_activity.py."""
+    return json_ok({
+        **await api_activity.summary(session, hours=max(1, min(168, hours))),
+        "calls": await api_activity.recent(session, limit=limit, hours=hours),
+    })
+
+
 @router.get("/dashboard/trips/{trip_id}")
 async def dashboard_trip_detail(trip_id: str, session: AsyncSession = Depends(get_session)):
     await sm.tick(session, whatsapp_client)
@@ -384,7 +404,13 @@ async def dashboard_trip_detail(trip_id: str, session: AsyncSession = Depends(ge
     if trip is None:
         raise HTTPException(404, "unknown trip")
     zone = await session.get(Zone, trip.zone_id)
-    return dashboard_trip_to_dict(trip, corridor_km=zone.corridor_km if zone else None)
+    detail = dashboard_trip_to_dict(trip, corridor_km=zone.corridor_km if zone else None)
+    # The exact CAMARA requests behind the figures above. A dispatcher
+    # reading "risk 0.62, congestion light" is being asked to trust two
+    # numbers whose provenance is a third-party API call; this is that
+    # call, with its status and latency.
+    detail["api_calls"] = await api_activity.recent(session, limit=40, trip_id=trip.id)
+    return detail
 
 
 @router.post("/dashboard/trips/{trip_id}/resolve")

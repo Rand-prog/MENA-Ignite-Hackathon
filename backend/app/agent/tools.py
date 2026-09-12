@@ -8,10 +8,13 @@ See docs/SignalGuard_Technical_Feasibility.pdf §5.3.
 """
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
+from typing import Awaitable, Callable, TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..api_activity import attributed_to
 from ..config import settings
 from ..models import Trip, Zone
 from ..nokia_client import NokiaCallError, NokiaClient
@@ -28,6 +31,32 @@ class AgentContext:
     trip: Trip
     zone: Zone
     nac_device: str = settings.nac_device
+
+
+T = TypeVar("T")
+
+
+def _on_behalf_of_trip(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
+    """Tag every network call this tool makes with the trip it was made for.
+
+    The attribution has to happen here and not in NokiaClient, which is
+    given an API name, a method and a path and knows nothing else on
+    purpose. It has to happen at the tool boundary and not once per agent
+    run, because a single tool can fan out into more than one request and
+    each of them lands in `api_log` separately.
+
+    What it buys: the dispatcher's trip panel can list the exact CAMARA
+    calls behind the numbers it is showing — the point at which "risk 0.62"
+    stops being a figure this system asserts and becomes one it can show
+    the receipts for.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(ctx: "AgentContext", *args, **kwargs) -> T:
+        with attributed_to(ctx.trip.id):
+            return await fn(ctx, *args, **kwargs)
+
+    return wrapper
 
 
 def zone_seed_from_row(zone: Zone) -> ZoneSeed:
@@ -51,6 +80,7 @@ async def get_zone_profile(ctx: AgentContext, zone_id: str) -> dict:
     }
 
 
+@_on_behalf_of_trip
 async def get_congestion_insights(ctx: AgentContext, zone_id: str) -> dict:
     """CAMARA Congestion Insights — once, at the entry gate. The sandbox
     returns a list of recent time-bucketed readings, most recent first
@@ -78,6 +108,7 @@ async def get_congestion_insights(ctx: AgentContext, zone_id: str) -> dict:
     return {"tier": tier, "raw": result}
 
 
+@_on_behalf_of_trip
 async def get_location(ctx: AgentContext, trip_id: str) -> dict:
     """CAMARA Location Retrieval — one last-known-position snapshot."""
     try:
@@ -94,6 +125,7 @@ async def get_location(ctx: AgentContext, trip_id: str) -> dict:
     }
 
 
+@_on_behalf_of_trip
 async def check_device_reachability(ctx: AgentContext, trip_id: str) -> dict:
     """CAMARA Device Reachability Status — one-shot check. Ongoing
     verification during the crossing uses the subscription form instead.
@@ -117,6 +149,7 @@ async def check_device_reachability(ctx: AgentContext, trip_id: str) -> dict:
     return {"status": status, "raw": result}
 
 
+@_on_behalf_of_trip
 async def request_qod_session(ctx: AgentContext, trip_id: str) -> dict:
     """CAMARA Quality on Demand — only called when the agent judges it
     warranted. Not every crossing spends one."""
@@ -154,6 +187,7 @@ async def escalate_to_dashboard(ctx: AgentContext, trip_id: str) -> dict:
     return {"escalated": True}
 
 
+@_on_behalf_of_trip
 async def manage_geofence_subscription(
     ctx: AgentContext, *, action: str, gate: str = "entry",
     sink: str | None = None,
