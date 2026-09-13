@@ -1621,28 +1621,14 @@ function fillDetail(trip) {
   const entry = formatCoords(trip.entry_point);
   const lastKnown = formatCoords(trip.last_known_location);
   const sameFix = entry !== null && entry === lastKnown;
-  const offBy = fixOffCorridorKm(trip, entry);
-  fillCoordField(
-    ui.detailEntry, entry,
-    offBy
-      ? `This fix is ${offBy.toLocaleString()} km from the corridor's gates — ` +
-        "not a position to search. The Nokia sandbox's shared simulator " +
-        "device reports a fixed European location whichever zone is armed; " +
-        "on a live operator line the same reading would mean the wrong " +
-        "MSISDN. The map below plots elapsed time along the corridor, not " +
-        "this coordinate."
-      : undefined
-  );
+  fillCoordField(ui.detailEntry, entry);
   setText(
     ui.detailEntryLabel,
     sameFix ? "Entry point — also the last known fix" : "Entry point"
   );
   ui.detailLastKnownRow.hidden = sameFix;
   if (!sameFix) {
-    fillCoordField(
-      ui.detailLastKnown, lastKnown,
-      fixOffCorridorKm(trip, lastKnown) ? "Same sandbox caveat as above." : undefined
-    );
+    fillCoordField(ui.detailLastKnown, lastKnown);
   }
 
   fillDetailPredicted(trip);

@@ -1,34 +1,10 @@
 /* Demo control panel. Rides on style.css's tokens so it reads as the same
    product, but is deliberately marked out as a separate, non-operational
-   surface: the band below is amber and permanent. */
+   surface. */
 
 .demo-body {
   overflow-y: auto;
 }
-
-.demo-band {
-  display: flex;
-  gap: 14px;
-  align-items: baseline;
-  flex-wrap: wrap;
-  margin: 0;
-  padding: 12px 24px;
-  background: rgba(230, 185, 77, 0.1);
-  border-bottom: 1px solid var(--amber);
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.demo-band strong {
-  color: var(--amber);
-  letter-spacing: 0.08em;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.demo-band span { max-width: 96ch; }
-.demo-band em { color: var(--text); font-style: normal; }
 
 .demo-unavailable {
   margin: 40px auto;

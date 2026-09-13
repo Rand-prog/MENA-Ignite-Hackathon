@@ -88,7 +88,6 @@ const ui = {
   backendInput: $("backend-url"),
   unavailable: $("demo-unavailable"),
   main: $("demo-main"),
-  band: $("demo-band"),
   zone: $("f-zone"),
   battery: $("f-battery"),
   model: $("f-model"),
@@ -124,7 +123,9 @@ async function api(path, opts) {
     try {
       detail = JSON.parse(text).detail || "";
     } catch (e) { /* not JSON */ }
-    throw new Error(`${resp.status}${detail ? " " + detail : ""}`);
+    const err = new Error(`${resp.status}${detail ? " " + detail : ""}`);
+    err.status = resp.status;
+    throw err;
   }
   return text ? JSON.parse(text) : null;
 }
@@ -339,7 +340,17 @@ async function refresh() {
       }
     }
     if (state.tripId) {
-      state.trip = await api(`/trips/${encodeURIComponent(state.tripId)}`);
+      try {
+        state.trip = await api(`/trips/${encodeURIComponent(state.tripId)}`);
+      } catch (err) {
+        // A trip remembered in localStorage from before a reset no longer
+        // exists. The backend answered, so this is not "unreachable" —
+        // forget the trip and keep polling.
+        if (err.status !== 404) throw err;
+        state.tripId = "";
+        state.trip = null;
+        saveSession();
+      }
     }
     renderStatus();
     renderApiLog(await api("/demo/api-log?limit=8"));
@@ -355,7 +366,6 @@ function disablePanel(message) {
   state.ready = false;
   setBusy(false);
   ui.main.hidden = true;
-  ui.band.hidden = true;
   ui.unavailable.hidden = false;
   ui.unavailable.textContent = message;
 }
@@ -363,7 +373,6 @@ function disablePanel(message) {
 async function bootstrap() {
   ui.unavailable.hidden = true;
   ui.main.hidden = false;
-  ui.band.hidden = false;
   let health;
   try {
     health = await api("/healthz");

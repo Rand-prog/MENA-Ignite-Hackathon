@@ -242,7 +242,7 @@ The product still runs; it just stops being evidence.
   needs billing on the account rather than a code change. Every send is
   logged as a no-op, and the console shows those rows as `SKIP` rather than
   as failures — "we never tried" and "we tried and failed" call for
-  opposite actions. See the note in `README.md`.
+  opposite actions. See Known limitations in `README.md`.
 - **No auth on the console, and CORS is wide open.** It is a prototype; the
   note in `backend/app/main.py` says what would have to change first.
 
@@ -289,5 +289,4 @@ docs/        product, technical, security and business-model references
              plus docs/screenshots/ — every screenshot in the pitch deck
 ```
 
-`README.md` is the engineering log: what was built, what was measured, what
-was found wrong and fixed, and why several things are the way they are.
+See `README.md` for the project overview, architecture and integration notes.

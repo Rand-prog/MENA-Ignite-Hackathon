@@ -195,15 +195,13 @@ body {
   padding: 20px 24px;
 }
 
-/* App-like fixed-viewport shell with internally-scrolling panels — only
-   once there's room for the two-column grid it's designed for. Below
-   that, .layout stacks (see the bottom media query) and the whole page
-   scrolls normally instead; forcing overflow:hidden there would trap
-   content no viewport had room to show. */
+/* The whole page scrolls as one document at every width. The map column
+   holds more than a viewport of content (map, stats, Network API activity),
+   so a fixed-viewport shell either clipped it or split scrolling between
+   panels. The map keeps a fixed height (see .map-frame below) rather than
+   flexing to fill a column that no longer has a set height. */
 @media (min-width: 861px) {
-  body { height: 100vh; overflow: hidden; }
-  .layout { overflow: hidden; }
-  .map-panel, .list-panel { overflow: hidden; }
+  .map-collapse { flex: none; }
 }
 
 .panel-head { flex: none; margin-bottom: 14px; }
@@ -220,6 +218,12 @@ body {
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
+}
+
+/* Fixed height in the scrolling desktop column (see the min-width:861px
+   block above). Declared after the base rule so it wins over flex:1. */
+@media (min-width: 861px) {
+  .map-frame { flex: none; height: clamp(260px, 48vh, 560px); }
 }
 
 .map-frame img {
