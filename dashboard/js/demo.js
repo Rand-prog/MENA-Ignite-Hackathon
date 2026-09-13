@@ -21,7 +21,7 @@
  * this page renders the same names.
  */
 
-const DEFAULT_BACKEND = "http://127.0.0.1:8000";
+const DEFAULT_BACKEND = "https://signalguard-backend.onrender.com";
 const POLL_MS = 2000;
 
 // The conductor's own demo identity (run_demo.py Config). Matching it means

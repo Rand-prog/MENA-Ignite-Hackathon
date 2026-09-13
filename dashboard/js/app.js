@@ -19,7 +19,7 @@
  *     screen reader re-reads the whole queue every three seconds.
  */
 
-const DEFAULT_BACKEND = "http://127.0.0.1:8000";
+const DEFAULT_BACKEND = "https://signalguard-backend.onrender.com";
 const POLL_MS = 3000;
 
 /** True when this page is being served from somewhere other than the
